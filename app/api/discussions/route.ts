@@ -54,6 +54,14 @@ export async function POST(req: NextRequest) {
       targetEventId = team.event_id; // Strictly scoped to team's enrolled event
     }
 
+    const event = Database.getEvent(targetEventId);
+    if (event?.discussion_enabled === false) {
+      return NextResponse.json(
+        { error: "Discussions are currently disabled for this event by the administrator." },
+        { status: 403 }
+      );
+    }
+
     const created = await Database.addDiscussionMessage(targetEventId, teamId, teamName, authorName, content);
     return NextResponse.json({ success: true, message: created });
   } catch (err: any) {

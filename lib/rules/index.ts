@@ -7,13 +7,15 @@ export type EventStatus =
   | "VOTING_CLOSED"
   | "RESULTS_READY"
   | "RESULTS_PUBLISHED"
-  | "ARCHIVED";
+  | "ARCHIVED"
+  | "DEACTIVATED";
 
 export type TeamStatus =
   | "PENDING"
   | "APPROVED"
   | "CHANGES_REQUESTED"
-  | "REJECTED";
+  | "REJECTED"
+  | "WITHDRAWN";
 
 export interface StatusTransition {
   from: EventStatus;
@@ -78,6 +80,12 @@ export const WORKFLOW_TRANSITIONS: Record<EventStatus, { nextStatus: EventStatus
     confirmTitle: "",
     confirmDescription: "",
   },
+  DEACTIVATED: {
+    nextStatus: null,
+    actionLabel: "Event Deactivated",
+    confirmTitle: "",
+    confirmDescription: "",
+  },
 };
 
 export const STATUS_DESCRIPTIONS: Record<EventStatus, { title: string; subtitle: string; whatHappensNext: string }> = {
@@ -125,6 +133,11 @@ export const STATUS_DESCRIPTIONS: Record<EventStatus, { title: string; subtitle:
     title: "Event Archived",
     subtitle: "This event has officially concluded and is stored in the archives.",
     whatHappensNext: "All event records and final results are saved for future reference.",
+  },
+  DEACTIVATED: {
+    title: "Event Deactivated",
+    subtitle: "This event is currently paused/deactivated by the administrator.",
+    whatHappensNext: "Normal participation is suspended. You can reactivate the event at any time.",
   },
 };
 

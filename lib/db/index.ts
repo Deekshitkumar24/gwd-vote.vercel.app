@@ -67,13 +67,20 @@ export interface AuditRecord {
   details?: Record<string, any>;
 }
 
+export type LeaderboardVisibility = "HIDDEN" | "MEMBERS_ONLY" | "PUBLIC" | "FINAL";
+
 export interface EventRecord {
   id: string;
   name: string;
   description?: string;
   status: EventStatus;
+  previous_status?: EventStatus | null;
   leaderboard_public: boolean;
+  leaderboard_visibility: LeaderboardVisibility;
   max_tens: number;
+  discussion_enabled: boolean;
+  announcements_enabled: boolean;
+  allow_member_edits: boolean;
   registration_start?: string;
   registration_end?: string;
   voting_start?: string;
@@ -102,8 +109,13 @@ const DEFAULT_STATE: DatabaseState = {
       name: "GWD Team Hackathon & Showcase",
       description: "Annual peer review, rating, and pre-deployment showcase platform.",
       status: "DRAFT",
+      previous_status: null,
       leaderboard_public: false,
+      leaderboard_visibility: "PUBLIC",
       max_tens: 5,
+      discussion_enabled: true,
+      announcements_enabled: true,
+      allow_member_edits: true,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       archived_at: null,
@@ -136,7 +148,14 @@ export class Database {
             let activeId = DEFAULT_EVENT_ID;
 
             if (Array.isArray(remote.events) && remote.events.length > 0) {
-              eventsList = remote.events;
+              eventsList = remote.events.map((ev: any) => ({
+                ...ev,
+                previous_status: ev.previous_status || null,
+                discussion_enabled: ev.discussion_enabled !== false,
+                announcements_enabled: ev.announcements_enabled !== false,
+                allow_member_edits: ev.allow_member_edits !== false,
+                leaderboard_visibility: ev.leaderboard_visibility || (ev.leaderboard_public ? "PUBLIC" : "HIDDEN"),
+              }));
               activeId = remote.activeEventId || remote.events[0].id;
             } else if (remote.event) {
               eventsList = [{
@@ -144,8 +163,13 @@ export class Database {
                 name: remote.event.name || "GWD Team Hackathon & Showcase",
                 description: remote.event.description || "",
                 status: remote.event.status || "DRAFT",
+                previous_status: null,
                 leaderboard_public: Boolean(remote.event.leaderboard_public),
+                leaderboard_visibility: "PUBLIC",
                 max_tens: typeof remote.event.max_tens === "number" ? remote.event.max_tens : 5,
+                discussion_enabled: true,
+                announcements_enabled: true,
+                allow_member_edits: true,
                 created_at: remote.event.created_at || new Date().toISOString(),
                 updated_at: remote.event.updated_at || new Date().toISOString(),
                 archived_at: null,
@@ -257,8 +281,13 @@ export class Database {
       name: data.name.trim(),
       description: data.description?.trim() || "",
       status: "DRAFT",
+      previous_status: null,
       leaderboard_public: Boolean(data.leaderboard_public),
+      leaderboard_visibility: data.leaderboard_public ? "PUBLIC" : "HIDDEN",
       max_tens: typeof data.max_tens === "number" && data.max_tens > 0 ? data.max_tens : 5,
+      discussion_enabled: true,
+      announcements_enabled: true,
+      allow_member_edits: true,
       registration_start: data.registration_start || undefined,
       registration_end: data.registration_end || undefined,
       voting_start: data.voting_start || undefined,
@@ -305,6 +334,98 @@ export class Database {
     return newEvent;
   }
 
+  public static async updateEventSettings(
+    eventId: string,
+    settings: {
+      name?: string;
+      description?: string;
+      max_tens?: number;
+      leaderboard_public?: boolean;
+      leaderboard_visibility?: LeaderboardVisibility;
+      discussion_enabled?: boolean;
+      announcements_enabled?: boolean;
+      allow_member_edits?: boolean;
+      registration_start?: string;
+      registration_end?: string;
+      voting_start?: string;
+      voting_end?: string;
+    }
+  ): Promise<EventRecord | null> {
+    const event = memoryState.events.find((e) => e.id === eventId);
+    if (!event) return null;
+    if (event.status === "ARCHIVED") {
+      throw new Error("Archived events cannot be modified.");
+    }
+
+    if (settings.name && settings.name.trim()) event.name = settings.name.trim();
+    if (settings.description !== undefined) event.description = settings.description.trim();
+    if (typeof settings.max_tens === "number" && settings.max_tens > 0) event.max_tens = settings.max_tens;
+    if (typeof settings.leaderboard_public === "boolean") event.leaderboard_public = settings.leaderboard_public;
+    if (settings.leaderboard_visibility) event.leaderboard_visibility = settings.leaderboard_visibility;
+    if (typeof settings.discussion_enabled === "boolean") event.discussion_enabled = settings.discussion_enabled;
+    if (typeof settings.announcements_enabled === "boolean") event.announcements_enabled = settings.announcements_enabled;
+    if (typeof settings.allow_member_edits === "boolean") event.allow_member_edits = settings.allow_member_edits;
+    if (settings.registration_start !== undefined) event.registration_start = settings.registration_start || undefined;
+    if (settings.registration_end !== undefined) event.registration_end = settings.registration_end || undefined;
+    if (settings.voting_start !== undefined) event.voting_start = settings.voting_start || undefined;
+    if (settings.voting_end !== undefined) event.voting_end = settings.voting_end || undefined;
+
+    event.updated_at = new Date().toISOString();
+
+    await this.recordAudit("admin", "EVENT_SETTINGS_UPDATED", {
+      eventId,
+      updatedFields: Object.keys(settings),
+    }, eventId);
+
+    await this.persist();
+    return event;
+  }
+
+  public static async deactivateEvent(eventId: string, reason?: string): Promise<EventRecord | null> {
+    const event = memoryState.events.find((e) => e.id === eventId);
+    if (!event) return null;
+    if (event.status === "ARCHIVED") {
+      throw new Error("Archived events cannot be deactivated.");
+    }
+    if (event.status === "DEACTIVATED") {
+      return event;
+    }
+
+    event.previous_status = event.status;
+    event.status = "DEACTIVATED";
+    event.updated_at = new Date().toISOString();
+
+    await this.recordAudit("admin", "EVENT_DEACTIVATED", {
+      eventId,
+      reason: reason?.trim() || "Event deactivated by administrator",
+      previousStatus: event.previous_status,
+    }, eventId);
+
+    await this.persist();
+    return event;
+  }
+
+  public static async reactivateEvent(eventId: string): Promise<EventRecord | null> {
+    const event = memoryState.events.find((e) => e.id === eventId);
+    if (!event) return null;
+    if (event.status !== "DEACTIVATED") {
+      throw new Error("Only deactivated events can be reactivated.");
+    }
+
+    const restoredStatus = event.previous_status || "DRAFT";
+    event.status = restoredStatus;
+    event.previous_status = null;
+    event.updated_at = new Date().toISOString();
+
+    await this.recordAudit("admin", "EVENT_REACTIVATED", {
+      eventId,
+      restoredStatus,
+    }, eventId);
+
+    await this.persist();
+    return event;
+  }
+
   public static async updateEventStatus(eventId: string, nextStatus: EventStatus): Promise<EventRecord | null> {
     const event = memoryState.events.find((e) => e.id === eventId);
     if (!event) return null;
@@ -334,6 +455,7 @@ export class Database {
     if (!event) return null;
 
     event.leaderboard_public = isPublic;
+    event.leaderboard_visibility = isPublic ? "PUBLIC" : "HIDDEN";
     event.updated_at = new Date().toISOString();
 
     await this.recordAudit("admin", "LEADERBOARD_VISIBILITY_CHANGE", {
@@ -570,6 +692,107 @@ export class Database {
     return team;
   }
 
+  public static async resetTeamBallot(
+    teamId: string,
+    adminEmail: string,
+    reason: string
+  ): Promise<TeamRecord | null> {
+    const team = memoryState.teams.find((t) => t.id === teamId);
+    if (!team) return null;
+
+    // Remove all ratings cast by this team for this event
+    memoryState.ratings = memoryState.ratings.filter(
+      (r) => !(r.event_id === team.event_id && r.rater_team_id === teamId)
+    );
+
+    const prev = team.submitted_at;
+    team.submitted_at = null;
+
+    await this.recordAudit(
+      "admin",
+      "BALLOT_RESET",
+      {
+        administrator: adminEmail,
+        teamId: team.id,
+        teamCode: team.code,
+        teamName: team.name,
+        reason: reason.trim(),
+        previousSubmission: prev,
+        eventId: team.event_id,
+      },
+      team.event_id
+    );
+
+    await this.persist();
+    return team;
+  }
+
+  public static async withdrawTeam(teamId: string): Promise<TeamRecord | null> {
+    const team = memoryState.teams.find((t) => t.id === teamId);
+    if (!team) return null;
+
+    team.status = "WITHDRAWN";
+    await this.recordAudit(
+      team.code,
+      "TEAM_WITHDRAWN",
+      { teamName: team.name, eventId: team.event_id },
+      team.event_id
+    );
+
+    await this.persist();
+    return team;
+  }
+
+  public static async addTeamMember(
+    teamId: string,
+    member: { name: string; role?: string; email?: string }
+  ): Promise<TeamRecord | null> {
+    const team = memoryState.teams.find((t) => t.id === teamId);
+    if (!team) return null;
+
+    const newMember: TeamMember = {
+      id: crypto.randomUUID(),
+      name: member.name.trim(),
+      role: member.role?.trim() || "Member",
+      email: member.email?.trim() || "",
+    };
+
+    team.members.push(newMember);
+
+    await this.recordAudit(
+      team.code,
+      "TEAM_MEMBER_ADDED",
+      { memberName: newMember.name, role: newMember.role, teamId, eventId: team.event_id },
+      team.event_id
+    );
+
+    await this.persist();
+    return team;
+  }
+
+  public static async removeTeamMember(
+    teamId: string,
+    memberId: string
+  ): Promise<TeamRecord | null> {
+    const team = memoryState.teams.find((t) => t.id === teamId);
+    if (!team) return null;
+
+    const idx = team.members.findIndex((m) => m.id === memberId);
+    if (idx < 0) return null;
+
+    const removed = team.members.splice(idx, 1)[0];
+
+    await this.recordAudit(
+      team.code,
+      "TEAM_MEMBER_REMOVED",
+      { memberName: removed.name, memberId, teamId, eventId: team.event_id },
+      team.event_id
+    );
+
+    await this.persist();
+    return team;
+  }
+
   // ==========================================
   // RATINGS (STRICTLY SCOPED BY EVENT ID)
   // ==========================================
@@ -666,6 +889,23 @@ export class Database {
     await this.recordAudit("admin", "CREATE_ANNOUNCEMENT", { title: record.title, eventId }, eventId);
     await this.persist();
     return record;
+  }
+
+  public static async editAnnouncement(
+    eventId: string,
+    id: string,
+    title: string,
+    content: string,
+    is_pinned?: boolean
+  ): Promise<AnnouncementRecord | null> {
+    const item = memoryState.announcements.find((a) => a.id === id && a.event_id === eventId);
+    if (!item) return null;
+    item.title = title.trim();
+    item.content = content.trim();
+    if (typeof is_pinned === "boolean") item.is_pinned = is_pinned;
+    await this.recordAudit("admin", "EDIT_ANNOUNCEMENT", { title: item.title, eventId }, eventId);
+    await this.persist();
+    return item;
   }
 
   public static async togglePinAnnouncement(eventId: string, id: string): Promise<AnnouncementRecord | null> {

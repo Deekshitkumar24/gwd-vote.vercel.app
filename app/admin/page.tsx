@@ -108,10 +108,51 @@ export default function AdminDashboardPage() {
   // Announcements state
   const [announcements, setAnnouncements] = useState<any[]>([]);
   const [announcementModalOpen, setAnnouncementModalOpen] = useState(false);
+  const [editingAnnouncement, setEditingAnnouncement] = useState<any | null>(null);
   const [newTitle, setNewTitle] = useState("");
   const [newContent, setNewContent] = useState("");
   const [newIsPinned, setNewIsPinned] = useState(false);
   const [isSavingAnnouncement, setIsSavingAnnouncement] = useState(false);
+
+  // Edit Event Settings Modal
+  const [editSettingsModalOpen, setEditSettingsModalOpen] = useState(false);
+  const [editSettingsData, setEditSettingsData] = useState<{
+    name: string;
+    description: string;
+    max_tens: number;
+    leaderboard_visibility: string;
+    discussion_enabled: boolean;
+    announcements_enabled: boolean;
+    allow_member_edits: boolean;
+    registration_start: string;
+    registration_end: string;
+    voting_start: string;
+    voting_end: string;
+  }>({
+    name: "",
+    description: "",
+    max_tens: 5,
+    leaderboard_visibility: "PUBLIC",
+    discussion_enabled: true,
+    announcements_enabled: true,
+    allow_member_edits: true,
+    registration_start: "",
+    registration_end: "",
+    voting_start: "",
+    voting_end: "",
+  });
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+
+  // Deactivate / Reactivate Event State
+  const [deactivateModalOpen, setDeactivateModalOpen] = useState(false);
+  const [deactivateReason, setDeactivateReason] = useState("");
+  const [isDeactivating, setIsDeactivating] = useState(false);
+
+  // Reset Ballot Modal State
+  const [resetModalOpen, setResetModalOpen] = useState(false);
+  const [resetTargetTeam, setResetTargetTeam] = useState<any | null>(null);
+  const [resetReason, setResetReason] = useState("");
+  const [isResetting, setIsResetting] = useState(false);
 
   // Discussion state
   const [discussions, setDiscussions] = useState<any[]>([]);
@@ -469,27 +510,41 @@ export default function AdminDashboardPage() {
     if (!newTitle.trim() || !newContent.trim() || !selectedEventId) return;
     setIsSavingAnnouncement(true);
     try {
-      const res = await fetch("/api/announcements", {
-        method: "POST",
+      const isEdit = Boolean(editingAnnouncement);
+      const url = "/api/announcements";
+      const method = isEdit ? "PATCH" : "POST";
+      const bodyPayload = isEdit
+        ? {
+            id: editingAnnouncement.id,
+            eventId: selectedEventId,
+            title: newTitle,
+            content: newContent,
+            is_pinned: newIsPinned,
+          }
+        : {
+            eventId: selectedEventId,
+            title: newTitle,
+            content: newContent,
+            is_pinned: newIsPinned,
+          };
+
+      const res = await fetch(url, {
+        method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          eventId: selectedEventId,
-          title: newTitle,
-          content: newContent,
-          is_pinned: newIsPinned,
-        }),
+        body: JSON.stringify(bodyPayload),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to create announcement");
+      if (!res.ok) throw new Error(data.error || "Failed to save announcement");
 
-      showFeedback("Announcement published successfully.");
+      showFeedback(isEdit ? "Announcement updated successfully." : "Announcement published successfully.");
       setAnnouncementModalOpen(false);
+      setEditingAnnouncement(null);
       setNewTitle("");
       setNewContent("");
       setNewIsPinned(false);
       loadAnnouncements();
     } catch (e: any) {
-      showFeedback(e.message || "Error creating announcement", "error");
+      showFeedback(e.message || "Error saving announcement", "error");
     } finally {
       setIsSavingAnnouncement(false);
     }
@@ -537,6 +592,136 @@ export default function AdminDashboardPage() {
     } catch (e) {
       console.error(e);
     }
+  };
+
+  // Open Edit Event Settings Modal
+  const handleOpenEditSettings = () => {
+    if (!currentEvent) return;
+    setEditSettingsData({
+      name: currentEvent.name || "",
+      description: currentEvent.description || "",
+      max_tens: currentEvent.max_tens || 5,
+      leaderboard_visibility: currentEvent.leaderboard_visibility || (currentEvent.leaderboard_public ? "PUBLIC" : "HIDDEN"),
+      discussion_enabled: currentEvent.discussion_enabled !== false,
+      announcements_enabled: currentEvent.announcements_enabled !== false,
+      allow_member_edits: currentEvent.allow_member_edits !== false,
+      registration_start: currentEvent.registration_start ? currentEvent.registration_start.slice(0, 10) : "",
+      registration_end: currentEvent.registration_end ? currentEvent.registration_end.slice(0, 10) : "",
+      voting_start: currentEvent.voting_start ? currentEvent.voting_start.slice(0, 10) : "",
+      voting_end: currentEvent.voting_end ? currentEvent.voting_end.slice(0, 10) : "",
+    });
+    setEditSettingsModalOpen(true);
+  };
+
+  // Save Event Settings
+  const handleSaveEventSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedEventId || !editSettingsData.name.trim()) return;
+    setIsSavingSettings(true);
+    try {
+      const res = await fetch("/api/admin/events/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          eventId: selectedEventId,
+          ...editSettingsData,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update settings");
+
+      showFeedback("Event configuration updated successfully.");
+      setEditSettingsModalOpen(false);
+      loadEventStatus(selectedEventId);
+      loadEventsAndSession();
+    } catch (err: any) {
+      showFeedback(err.message || "Failed to save settings", "error");
+    } finally {
+      setIsSavingSettings(false);
+    }
+  };
+
+  // Deactivate Event Handler
+  const handleDeactivateEvent = async () => {
+    if (!selectedEventId) return;
+    setIsDeactivating(true);
+    try {
+      const res = await fetch("/api/admin/events/deactivate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          eventId: selectedEventId,
+          reason: deactivateReason,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to deactivate event");
+
+      showFeedback("Event has been deactivated. Normal participation is paused.");
+      setDeactivateModalOpen(false);
+      setDeactivateReason("");
+      loadEventStatus(selectedEventId);
+      loadEventsAndSession();
+    } catch (err: any) {
+      showFeedback(err.message || "Failed to deactivate event", "error");
+    } finally {
+      setIsDeactivating(false);
+    }
+  };
+
+  // Reactivate Event Handler
+  const handleReactivateEvent = async () => {
+    if (!selectedEventId) return;
+    try {
+      const res = await fetch("/api/admin/events/reactivate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventId: selectedEventId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to reactivate event");
+
+      showFeedback("Event successfully reactivated to its active lifecycle stage.");
+      loadEventStatus(selectedEventId);
+      loadEventsAndSession();
+    } catch (err: any) {
+      showFeedback(err.message || "Failed to reactivate event", "error");
+    }
+  };
+
+  // Reset Ballot Handler
+  const handleResetBallotSubmit = async () => {
+    if (!resetTargetTeam || !resetReason.trim()) return;
+    setIsResetting(true);
+    try {
+      const res = await fetch(`/api/admin/teams/${resetTargetTeam.teamId || resetTargetTeam.id}/reset`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: resetReason }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to reset ballot");
+
+      showFeedback(`Ballot for ${resetTargetTeam.teamName || resetTargetTeam.name} reset and ratings cleared.`);
+      setResetModalOpen(false);
+      setResetTargetTeam(null);
+      setResetReason("");
+      loadVotingStatus();
+      loadEventStatus(selectedEventId);
+    } catch (err: any) {
+      showFeedback(err.message || "Error resetting ballot", "error");
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
+  // Announcement edit starter
+  const handleOpenEditAnnouncement = (ann: any) => {
+    setEditingAnnouncement(ann);
+    setNewTitle(ann.title);
+    setNewContent(ann.content);
+    setNewIsPinned(ann.is_pinned);
+    setAnnouncementModalOpen(true);
   };
 
   if (isLoading) {
@@ -621,7 +806,7 @@ export default function AdminDashboardPage() {
             </div>
 
             {/* Top Primary Actions: Guided Next Action & "Create New Event" */}
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               {/* Prominent "Create New Event" Button */}
               <button
                 onClick={() => {
@@ -630,14 +815,57 @@ export default function AdminDashboardPage() {
                   setNewEventDesc("");
                   setCreateEventModalOpen(true);
                 }}
-                className="inline-flex items-center space-x-2 px-4 py-2.5 rounded-lg text-xs sm:text-sm font-bold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 transition-colors"
+                className="inline-flex items-center space-x-1.5 px-3.5 py-2.5 rounded-lg text-xs sm:text-sm font-bold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 transition-colors"
               >
                 <Plus className="w-4 h-4 text-[#b80000]" />
                 <span>Create New Event</span>
               </button>
 
+              {/* Configure Settings Button */}
+              {!isArchived && (
+                <button
+                  onClick={handleOpenEditSettings}
+                  className="inline-flex items-center space-x-1.5 px-3 py-2.5 rounded-lg text-xs sm:text-sm font-semibold text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 border border-slate-300 transition-colors"
+                  title="Configure event settings, dates, rules"
+                >
+                  <span>Edit Settings</span>
+                </button>
+              )}
+
+              {/* Projector Display Link */}
+              <Link
+                href={`/projector?eventId=${encodeURIComponent(selectedEventId)}`}
+                target="_blank"
+                className="inline-flex items-center space-x-1.5 px-3 py-2.5 rounded-lg text-xs sm:text-sm font-semibold text-slate-700 hover:text-[#b80000] bg-white hover:bg-slate-50 border border-slate-300 transition-colors"
+                title="Open high-contrast projector leaderboard display"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Projector View</span>
+              </Link>
+
+              {/* Deactivate or Reactivate action */}
+              {currentStatus === "DEACTIVATED" ? (
+                <button
+                  onClick={handleReactivateEvent}
+                  className="px-4 py-2.5 rounded-lg text-xs sm:text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-2xs transition-colors"
+                >
+                  Reactivate Event
+                </button>
+              ) : !isArchived ? (
+                <button
+                  onClick={() => {
+                    setDeactivateReason("");
+                    setDeactivateModalOpen(true);
+                  }}
+                  className="px-3 py-2.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-red-700 hover:bg-red-50 border border-slate-200 transition-colors"
+                  title="Pause/Deactivate this event"
+                >
+                  Deactivate
+                </button>
+              ) : null}
+
               {/* Single Primary Action for Current State */}
-              {!isArchived && nextAction?.nextStatus && (
+              {!isArchived && currentStatus !== "DEACTIVATED" && nextAction?.nextStatus && (
                 <button
                   onClick={() => setWorkflowModalOpen(true)}
                   className="inline-flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg text-xs sm:text-sm font-bold text-white bg-[#b80000] hover:bg-[#990000] shadow-2xs transition-all group"
@@ -1373,20 +1601,37 @@ export default function AdminDashboardPage() {
                             : "—"}
                         </td>
                         <td className="py-2.5 px-3 text-right">
-                          {vt.status === "SUBMITTED" && !isArchived ? (
-                            <button
-                              onClick={() => {
-                                setUnlockTargetTeam(vt);
-                                setUnlockReason("");
-                                setUnlockModalOpen(true);
-                              }}
-                              className="px-2 py-0.5 text-[11px] font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded transition-colors"
-                            >
-                              Unlock Ballot
-                            </button>
-                          ) : (
-                            <span className="text-slate-400 text-[11px]">—</span>
-                          )}
+                          <div className="flex items-center justify-end space-x-1.5">
+                            {vt.status === "SUBMITTED" && !isArchived && (
+                              <button
+                                onClick={() => {
+                                  setUnlockTargetTeam(vt);
+                                  setUnlockReason("");
+                                  setUnlockModalOpen(true);
+                                }}
+                                className="px-2 py-0.5 text-[11px] font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded transition-colors"
+                                title="Unlock ballot so team can edit ratings"
+                              >
+                                Unlock
+                              </button>
+                            )}
+                            {!isArchived && vt.ratedCount > 0 && (
+                              <button
+                                onClick={() => {
+                                  setResetTargetTeam(vt);
+                                  setResetReason("");
+                                  setResetModalOpen(true);
+                                }}
+                                className="px-2 py-0.5 text-[11px] font-semibold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded transition-colors"
+                                title="Reset all cast ratings and clear submitted ballot"
+                              >
+                                Reset
+                              </button>
+                            )}
+                            {vt.status !== "SUBMITTED" && vt.ratedCount === 0 && (
+                              <span className="text-slate-400 text-[11px]">—</span>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -1565,16 +1810,25 @@ export default function AdminDashboardPage() {
                         <h3 className="text-sm font-bold text-slate-900">{ann.title}</h3>
                       </div>
                       {!isArchived && (
-                        <div className="flex items-center space-x-1">
+                        <div className="flex items-center space-x-1.5">
+                          <button
+                            onClick={() => handleOpenEditAnnouncement(ann)}
+                            className="p-1 text-slate-400 hover:text-slate-800 transition-colors"
+                            title="Edit announcement"
+                          >
+                            <Copy className="w-3.5 h-3.5 rotate-90" />
+                          </button>
                           <button
                             onClick={() => handleTogglePinAnnouncement(ann.id)}
                             className="p-1 text-slate-400 hover:text-[#b80000] transition-colors"
+                            title={ann.is_pinned ? "Unpin announcement" : "Pin announcement"}
                           >
                             <Pin className="w-3.5 h-3.5" />
                           </button>
                           <button
                             onClick={() => handleDeleteAnnouncement(ann.id)}
                             className="p-1 text-slate-400 hover:text-red-600 transition-colors"
+                            title="Delete announcement"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -2126,12 +2380,15 @@ export default function AdminDashboardPage() {
         </div>
       </Modal>
 
-      {/* MODAL 6: Create Announcement */}
+      {/* MODAL 6: Create/Edit Announcement */}
       <Modal
         isOpen={announcementModalOpen}
-        onClose={() => setAnnouncementModalOpen(false)}
-        title={`Create Announcement (${currentEvent?.name})`}
-        confirmLabel="Publish Announcement"
+        onClose={() => {
+          setAnnouncementModalOpen(false);
+          setEditingAnnouncement(null);
+        }}
+        title={editingAnnouncement ? `Edit Announcement (${currentEvent?.name})` : `Create Announcement (${currentEvent?.name})`}
+        confirmLabel={editingAnnouncement ? "Update Announcement" : "Publish Announcement"}
         onConfirm={handleCreateAnnouncement as any}
         isLoading={isSavingAnnouncement}
       >
@@ -2173,6 +2430,188 @@ export default function AdminDashboardPage() {
             </label>
           </div>
         </form>
+      </Modal>
+
+      {/* MODAL 7: Edit Event Settings */}
+      <Modal
+        isOpen={editSettingsModalOpen}
+        onClose={() => setEditSettingsModalOpen(false)}
+        title={`Configure Event: ${currentEvent?.name || ""}`}
+        description="Update event parameters, dates, and feature visibility without creating a new event."
+        confirmLabel="Save Settings"
+        onConfirm={handleSaveEventSettings as any}
+        isLoading={isSavingSettings}
+      >
+        <form onSubmit={handleSaveEventSettings} className="space-y-4 text-xs">
+          <div>
+            <label className="block font-bold text-slate-900 mb-1">Event Name *</label>
+            <input
+              type="text"
+              required
+              value={editSettingsData.name}
+              onChange={(e) => setEditSettingsData({ ...editSettingsData, name: e.target.value })}
+              className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-[#b80000]"
+            />
+          </div>
+
+          <div>
+            <label className="block font-bold text-slate-900 mb-1">Description</label>
+            <textarea
+              rows={2}
+              value={editSettingsData.description}
+              onChange={(e) => setEditSettingsData({ ...editSettingsData, description: e.target.value })}
+              className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-[#b80000]"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block font-bold text-slate-900 mb-1">Max 10-Point Ratings Limit</label>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={editSettingsData.max_tens}
+                onChange={(e) => setEditSettingsData({ ...editSettingsData, max_tens: Number(e.target.value) })}
+                className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-[#b80000]"
+              />
+            </div>
+            <div>
+              <label className="block font-bold text-slate-900 mb-1">Leaderboard Visibility</label>
+              <select
+                value={editSettingsData.leaderboard_visibility}
+                onChange={(e) => setEditSettingsData({ ...editSettingsData, leaderboard_visibility: e.target.value })}
+                className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-[#b80000]"
+              >
+                <option value="PUBLIC">Public (Visible to everyone)</option>
+                <option value="MEMBERS_ONLY">Members Only (Approved teams)</option>
+                <option value="FINAL">Final Only (After publish)</option>
+                <option value="HIDDEN">Hidden (Admins only)</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block font-bold text-slate-900 mb-1">Registration Start Date</label>
+              <input
+                type="date"
+                value={editSettingsData.registration_start}
+                onChange={(e) => setEditSettingsData({ ...editSettingsData, registration_start: e.target.value })}
+                className="w-full p-2 border border-slate-300 rounded-lg outline-none"
+              />
+            </div>
+            <div>
+              <label className="block font-bold text-slate-900 mb-1">Registration End Date</label>
+              <input
+                type="date"
+                value={editSettingsData.registration_end}
+                onChange={(e) => setEditSettingsData({ ...editSettingsData, registration_end: e.target.value })}
+                className="w-full p-2 border border-slate-300 rounded-lg outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block font-bold text-slate-900 mb-1">Voting Start Date</label>
+              <input
+                type="date"
+                value={editSettingsData.voting_start}
+                onChange={(e) => setEditSettingsData({ ...editSettingsData, voting_start: e.target.value })}
+                className="w-full p-2 border border-slate-300 rounded-lg outline-none"
+              />
+            </div>
+            <div>
+              <label className="block font-bold text-slate-900 mb-1">Voting End Date</label>
+              <input
+                type="date"
+                value={editSettingsData.voting_end}
+                onChange={(e) => setEditSettingsData({ ...editSettingsData, voting_end: e.target.value })}
+                className="w-full p-2 border border-slate-300 rounded-lg outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-slate-100 space-y-2">
+            <label className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                checked={editSettingsData.discussion_enabled}
+                onChange={(e) => setEditSettingsData({ ...editSettingsData, discussion_enabled: e.target.checked })}
+                className="rounded text-[#b80000]"
+              />
+              <span className="font-semibold text-slate-800">Enable Team Discussion Board</span>
+            </label>
+
+            <label className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                checked={editSettingsData.allow_member_edits}
+                onChange={(e) => setEditSettingsData({ ...editSettingsData, allow_member_edits: e.target.checked })}
+                className="rounded text-[#b80000]"
+              />
+              <span className="font-semibold text-slate-800">Allow Team Leaders to manage roster members</span>
+            </label>
+          </div>
+        </form>
+      </Modal>
+
+      {/* MODAL 8: Deactivate Event Confirmation */}
+      <Modal
+        isOpen={deactivateModalOpen}
+        onClose={() => setDeactivateModalOpen(false)}
+        title={`Deactivate Event: ${currentEvent?.name || ""}`}
+        description="Deactivating this event will temporarily suspend normal team registration, voting, and participant actions. All data and records remain completely safe."
+        confirmLabel="Deactivate Event"
+        confirmVariant="danger"
+        onConfirm={handleDeactivateEvent}
+        isLoading={isDeactivating}
+      >
+        <div className="space-y-3 text-xs">
+          <div>
+            <label className="block font-bold text-slate-900 mb-1">Reason for Deactivation (Optional):</label>
+            <textarea
+              rows={3}
+              placeholder="e.g. Temporary event pause for scheduling adjustments..."
+              value={deactivateReason}
+              onChange={(e) => setDeactivateReason(e.target.value)}
+              className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-[#b80000]"
+            />
+          </div>
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded text-amber-800 text-[11px]">
+            <span className="font-bold">Reactivation Available:</span> You can safely reactivate this event at any time from this dashboard to resume from where it was paused.
+          </div>
+        </div>
+      </Modal>
+
+      {/* MODAL 9: Reset Ballot Confirmation */}
+      <Modal
+        isOpen={resetModalOpen}
+        onClose={() => setResetModalOpen(false)}
+        title={`Reset Ballot: ${resetTargetTeam?.teamName || resetTargetTeam?.name || ""}`}
+        description="Clear all 1–10 peer ratings cast by this team and unlock their ballot. A formal reason is required."
+        confirmLabel="Reset Ballot"
+        confirmVariant="danger"
+        onConfirm={handleResetBallotSubmit}
+        isLoading={isResetting}
+      >
+        <div className="space-y-3 text-xs">
+          <div>
+            <label className="block font-bold text-slate-900 mb-1">Reason for Reset *</label>
+            <textarea
+              rows={3}
+              placeholder="e.g. Team leader requested reset due to evaluating wrong projects..."
+              value={resetReason}
+              onChange={(e) => setResetReason(e.target.value)}
+              className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-[#b80000]"
+              required
+            />
+          </div>
+          <div className="p-3 bg-red-50 border border-red-200 rounded text-red-800 text-[11px]">
+            <span className="font-bold">Warning:</span> This will permanently erase the draft or submitted scores cast by this team. The action will be logged in the permanent audit trail.
+          </div>
+        </div>
       </Modal>
     </div>
   );

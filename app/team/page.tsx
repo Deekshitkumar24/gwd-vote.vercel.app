@@ -19,6 +19,10 @@ import {
   RefreshCw,
   ArrowRight,
   Sparkles,
+  Edit3,
+  UserPlus,
+  Trash2,
+  AlertTriangle,
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { Modal } from "@/components/Modal";
@@ -53,12 +57,125 @@ export default function TeamDashboardPage() {
   const [newMessage, setNewMessage] = useState("");
   const [isSendingMessage, setIsSendingMessage] = useState(false);
 
+  // Edit Registration state (for CHANGES_REQUESTED or PENDING updates)
+  const [editRegModalOpen, setEditRegModalOpen] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editLeaderName, setEditLeaderName] = useState("");
+  const [editContact, setEditContact] = useState("");
+  const [editDesc, setEditDesc] = useState("");
+  const [isSubmittingRegUpdate, setIsSubmittingRegUpdate] = useState(false);
+
+  // Withdraw Registration state
+  const [withdrawModalOpen, setWithdrawModalOpen] = useState(false);
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
+
+  // Member Management state
+  const [addMemberModalOpen, setAddMemberModalOpen] = useState(false);
+  const [newMemberName, setNewMemberName] = useState("");
+  const [newMemberRole, setNewMemberRole] = useState("Member");
+  const [newMemberEmail, setNewMemberEmail] = useState("");
+  const [isAddingMember, setIsAddingMember] = useState(false);
+
   // Feedback Notification
   const [feedback, setFeedback] = useState<{ text: string; type: "success" | "error" } | null>(null);
 
   const showFeedback = (text: string, type: "success" | "error" = "success") => {
     setFeedback({ text, type });
     setTimeout(() => setFeedback(null), 3500);
+  };
+
+  const handleOpenEditRegistration = () => {
+    setEditName(sessionUser?.name || "");
+    setEditLeaderName(sessionUser?.leaderName || "");
+    setEditContact(sessionUser?.contact || "");
+    setEditDesc(sessionUser?.description || "");
+    setEditRegModalOpen(true);
+  };
+
+  const handleUpdateRegistration = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!editName.trim() || !editLeaderName.trim()) return;
+    setIsSubmittingRegUpdate(true);
+    try {
+      const res = await fetch("/api/teams/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: editName,
+          leader_name: editLeaderName,
+          contact: editContact,
+          description: editDesc,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update registration");
+      showFeedback("Registration updated! Status returned to pending review.");
+      setEditRegModalOpen(false);
+      loadInitialData();
+    } catch (err: any) {
+      showFeedback(err.message || "Update failed", "error");
+    } finally {
+      setIsSubmittingRegUpdate(false);
+    }
+  };
+
+  const handleWithdraw = async () => {
+    setIsWithdrawing(true);
+    try {
+      const res = await fetch("/api/teams/withdraw", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to withdraw");
+      showFeedback("Team registration withdrawn.");
+      setWithdrawModalOpen(false);
+      loadInitialData();
+    } catch (err: any) {
+      showFeedback(err.message || "Failed to withdraw", "error");
+    } finally {
+      setIsWithdrawing(false);
+    }
+  };
+
+  const handleAddMember = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!newMemberName.trim()) return;
+    setIsAddingMember(true);
+    try {
+      const res = await fetch("/api/teams/members", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newMemberName,
+          role: newMemberRole,
+          email: newMemberEmail,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to add member");
+      showFeedback(`Added ${newMemberName} to team roster.`);
+      setAddMemberModalOpen(false);
+      setNewMemberName("");
+      setNewMemberEmail("");
+      loadInitialData();
+    } catch (err: any) {
+      showFeedback(err.message || "Failed to add member", "error");
+    } finally {
+      setIsAddingMember(false);
+    }
+  };
+
+  const handleRemoveMember = async (memberId: string, memberName: string) => {
+    if (!confirm(`Remove ${memberName} from team roster?`)) return;
+    try {
+      const res = await fetch(`/api/teams/members?memberId=${encodeURIComponent(memberId)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to remove member");
+      showFeedback(`Removed ${memberName} from roster.`);
+      loadInitialData();
+    } catch (err: any) {
+      showFeedback(err.message || "Failed to remove member", "error");
+    }
   };
 
   // 1. Load Session & Event
@@ -70,18 +187,22 @@ export default function TeamDashboardPage() {
         router.push("/login");
         return;
       }
-      setSessionUser(authData.user);
-      const evId = authData.user.eventId;
+      const teamRes = await fetch("/api/teams/me");
+      if (teamRes.ok) {
+        const teamData = await teamRes.json();
+        setSessionUser({ ...authData.user, ...teamData.team });
+        if (teamData.team?.submittedAt) {
+          setIsBallotSubmitted(true);
+          setSubmittedAtTime(teamData.team.submittedAt);
+        }
+      } else {
+        setSessionUser(authData.user);
+      }
 
+      const evId = authData.user.eventId;
       const eventRes = await fetch(`/api/event/status?eventId=${encodeURIComponent(evId || "")}`);
       const eData = await eventRes.json();
       setEventData(eData);
-
-      // If ballot already submitted
-      if (authData.user?.submittedAt) {
-        setIsBallotSubmitted(true);
-        setSubmittedAtTime(authData.user.submittedAt);
-      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -289,7 +410,13 @@ export default function TeamDashboardPage() {
   let actionDesc = "";
   let actionButton = null;
 
-  if (teamStatus === "PENDING") {
+  if (currentEventStatus === "DEACTIVATED") {
+    actionTitle = "Event Paused / Deactivated";
+    actionDesc = "The event is temporarily suspended by the administrator. Normal voting and registrations are on hold.";
+  } else if (teamStatus === "WITHDRAWN") {
+    actionTitle = "Registration Withdrawn";
+    actionDesc = "Your team has officially withdrawn from this event.";
+  } else if (teamStatus === "PENDING") {
     actionTitle = "Registration Pending";
     actionDesc = "Your registration is waiting for administrator approval.";
   } else if (teamStatus === "CHANGES_REQUESTED") {
@@ -297,6 +424,15 @@ export default function TeamDashboardPage() {
     actionDesc = sessionUser?.adminFeedback
       ? `Organizer note: "${sessionUser.adminFeedback}"`
       : "The administrator requested updates to your registration.";
+    actionButton = (
+      <button
+        onClick={handleOpenEditRegistration}
+        className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-bold text-white bg-[#b80000] hover:bg-[#990000] shadow-2xs transition-all"
+      >
+        <Edit3 className="w-4 h-4" />
+        <span>Update Registration</span>
+      </button>
+    );
   } else if (teamStatus === "REJECTED") {
     actionTitle = "Registration Rejected";
     actionDesc = sessionUser?.adminFeedback
@@ -451,25 +587,97 @@ export default function TeamDashboardPage() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Team Roster Card */}
             <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-xs p-6 space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                <h2 className="text-base font-bold text-slate-900">
-                  Registered Members ({sessionUser?.members?.length || 1})
-                </h2>
-                <span className="text-xs text-slate-500 font-medium">Official Team Roster</span>
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-slate-100">
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">
+                    Registered Members ({sessionUser?.members?.length || 1})
+                  </h2>
+                  <p className="text-xs text-slate-500 font-medium">Official Team Roster</p>
+                </div>
+                {eventData?.event?.allow_member_edits !== false && teamStatus !== "WITHDRAWN" && (
+                  <button
+                    onClick={() => setAddMemberModalOpen(true)}
+                    className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-bold text-[#b80000] bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors self-start sm:self-auto"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>Add Member</span>
+                  </button>
+                )}
               </div>
 
               <div className="divide-y divide-slate-100">
-                {sessionUser?.members?.map((m: any, idx: number) => (
-                  <div key={idx} className="py-2.5 flex items-center justify-between">
-                    <div>
-                      <div className="text-sm font-semibold text-slate-900">{m.name}</div>
-                      {m.email && <div className="text-xs text-slate-500">{m.email}</div>}
+                {sessionUser?.members?.map((m: any, idx: number) => {
+                  const isLeader =
+                    m.role === "Team Leader" ||
+                    (sessionUser.leaderEmail && m.email?.toLowerCase() === sessionUser.leaderEmail.toLowerCase());
+                  const canRemove =
+                    !isLeader &&
+                    eventData?.event?.allow_member_edits !== false &&
+                    teamStatus !== "WITHDRAWN";
+
+                  return (
+                    <div key={m.id || idx} className="py-2.5 flex items-center justify-between">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-900 flex items-center space-x-2">
+                          <span>{m.name}</span>
+                          {isLeader && (
+                            <span className="text-[10px] font-bold text-[#b80000] bg-red-50 px-1.5 py-0.2 rounded">
+                              LEADER
+                            </span>
+                          )}
+                        </div>
+                        {m.email && <div className="text-xs text-slate-500">{m.email}</div>}
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <span className="text-xs font-medium text-slate-600 bg-slate-100 px-2.5 py-1 rounded-full">
+                          {m.role || "Member"}
+                        </span>
+                        {canRemove && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveMember(m.id, m.name)}
+                            title="Remove member"
+                            className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    <span className="text-xs font-medium text-slate-600 bg-slate-100 px-2.5 py-1 rounded-full">
-                      {m.role || "Member"}
-                    </span>
-                  </div>
-                ))}
+                  );
+                })}
+              </div>
+
+              {/* Team Registration Actions */}
+              <div className="mt-4 pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                <div className="text-xs text-slate-500">
+                  {sessionUser?.description && (
+                    <p className="italic mb-1">&quot;{sessionUser.description}&quot;</p>
+                  )}
+                  {sessionUser?.contact && (
+                    <p>Contact: <span className="font-medium text-slate-700">{sessionUser.contact}</span></p>
+                  )}
+                </div>
+                <div className="flex items-center space-x-2">
+                  {(teamStatus === "CHANGES_REQUESTED" || (currentEventStatus === "REGISTRATION_OPEN" && teamStatus !== "WITHDRAWN")) && (
+                    <button
+                      onClick={handleOpenEditRegistration}
+                      className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-lg transition-colors"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span>Edit Info</span>
+                    </button>
+                  )}
+                  {currentEventStatus === "REGISTRATION_OPEN" && teamStatus !== "WITHDRAWN" && (
+                    <button
+                      onClick={() => setWithdrawModalOpen(true)}
+                      className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors"
+                    >
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      <span>Withdraw Team</span>
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -838,7 +1046,15 @@ export default function TeamDashboardPage() {
               </button>
             </div>
 
-            {announcements.length === 0 ? (
+            {eventData?.event?.announcements_enabled === false ? (
+              <div className="p-12 text-center border border-dashed border-slate-200 rounded-lg">
+                <Bell className="w-10 h-10 mx-auto text-slate-300 mb-2" />
+                <h3 className="text-sm font-bold text-slate-900">Announcements Disabled</h3>
+                <p className="mt-1 text-xs text-slate-500 max-w-sm mx-auto">
+                  Announcements are currently turned off for this event.
+                </p>
+              </div>
+            ) : announcements.length === 0 ? (
               <div className="p-12 text-center border border-dashed border-slate-200 rounded-lg">
                 <Bell className="w-10 h-10 mx-auto text-slate-300 mb-2" />
                 <h3 className="text-sm font-bold text-slate-900">No announcements yet</h3>
@@ -892,60 +1108,72 @@ export default function TeamDashboardPage() {
               </button>
             </div>
 
-            {/* Post Message Form */}
-            {isApproved ? (
-              <form onSubmit={handlePostMessage} className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Share a question or message with participants..."
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                  className="flex-1 px-3.5 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:ring-1 focus:ring-[#b80000] outline-none"
-                />
-                <button
-                  type="submit"
-                  disabled={isSendingMessage || !newMessage.trim()}
-                  className="inline-flex items-center space-x-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#b80000] hover:bg-[#990000] rounded-lg transition-colors disabled:opacity-50"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  <span>Send</span>
-                </button>
-              </form>
-            ) : (
-              <p className="text-xs text-slate-500 italic">
-                Only approved teams can post messages in this discussion.
-              </p>
-            )}
-
-            {/* Message Feed */}
-            {discussions.length === 0 ? (
+            {eventData?.event?.discussion_enabled === false ? (
               <div className="p-12 text-center border border-dashed border-slate-200 rounded-lg">
                 <MessageSquare className="w-10 h-10 mx-auto text-slate-300 mb-2" />
-                <h3 className="text-sm font-bold text-slate-900">No discussion messages yet</h3>
+                <h3 className="text-sm font-bold text-slate-900">Discussion Disabled</h3>
                 <p className="mt-1 text-xs text-slate-500 max-w-sm mx-auto">
-                  Be the first to post a message to the group.
+                  Participant discussion is currently disabled by organizers for this event.
                 </p>
               </div>
             ) : (
-              <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto pr-1">
-                {discussions.map((msg) => (
-                  <div key={msg.id} className="py-3 space-y-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs font-bold text-slate-900">{msg.author_name}</span>
-                      <span className="text-slate-300">•</span>
-                      <span className="text-xs font-semibold text-[#b80000]">{msg.team_name}</span>
-                      <span className="text-slate-300">•</span>
-                      <span className="text-[11px] text-slate-400">
-                        {new Date(msg.created_at).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-700">{msg.content}</p>
+              <>
+                {/* Post Message Form */}
+                {isApproved ? (
+                  <form onSubmit={handlePostMessage} className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Share a question or message with participants..."
+                      value={newMessage}
+                      onChange={(e) => setNewMessage(e.target.value)}
+                      className="flex-1 px-3.5 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:ring-1 focus:ring-[#b80000] outline-none"
+                    />
+                    <button
+                      type="submit"
+                      disabled={isSendingMessage || !newMessage.trim()}
+                      className="inline-flex items-center space-x-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#b80000] hover:bg-[#990000] rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>Send</span>
+                    </button>
+                  </form>
+                ) : (
+                  <p className="text-xs text-slate-500 italic">
+                    Only approved teams can post messages in this discussion.
+                  </p>
+                )}
+
+                {/* Message Feed */}
+                {discussions.length === 0 ? (
+                  <div className="p-12 text-center border border-dashed border-slate-200 rounded-lg">
+                    <MessageSquare className="w-10 h-10 mx-auto text-slate-300 mb-2" />
+                    <h3 className="text-sm font-bold text-slate-900">No discussion messages yet</h3>
+                    <p className="mt-1 text-xs text-slate-500 max-w-sm mx-auto">
+                      Be the first to post a message to the group.
+                    </p>
                   </div>
-                ))}
-              </div>
+                ) : (
+                  <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto pr-1">
+                    {discussions.map((msg) => (
+                      <div key={msg.id} className="py-3 space-y-1">
+                        <div className="flex items-center space-x-2">
+                          <span className="text-xs font-bold text-slate-900">{msg.author_name}</span>
+                          <span className="text-slate-300">•</span>
+                          <span className="text-xs font-semibold text-[#b80000]">{msg.team_name}</span>
+                          <span className="text-slate-300">•</span>
+                          <span className="text-[11px] text-slate-400">
+                            {new Date(msg.created_at).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-700">{msg.content}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -987,6 +1215,123 @@ export default function TeamDashboardPage() {
             <span className="font-bold">Important:</span> Once submitted, your ballot will be permanently locked and cannot be edited.
           </div>
         </div>
+      </Modal>
+
+      {/* MODAL: EDIT REGISTRATION */}
+      <Modal
+        isOpen={editRegModalOpen}
+        onClose={() => setEditRegModalOpen(false)}
+        title="Update Team Registration"
+        description="Revise your registration details. If changes were requested, this will return your status to pending review."
+        confirmLabel="Save & Resubmit"
+        onConfirm={handleUpdateRegistration}
+        isLoading={isSubmittingRegUpdate}
+      >
+        <form onSubmit={handleUpdateRegistration} className="space-y-3 text-xs">
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Team Name</label>
+            <input
+              type="text"
+              required
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-[#b80000] outline-none"
+            />
+          </div>
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Leader Name</label>
+            <input
+              type="text"
+              required
+              value={editLeaderName}
+              onChange={(e) => setEditLeaderName(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-[#b80000] outline-none"
+            />
+          </div>
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Contact Phone / Phone</label>
+            <input
+              type="text"
+              value={editContact}
+              onChange={(e) => setEditContact(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-[#b80000] outline-none"
+            />
+          </div>
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Project Description / Pitch</label>
+            <textarea
+              rows={3}
+              value={editDesc}
+              onChange={(e) => setEditDesc(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-[#b80000] outline-none"
+            />
+          </div>
+        </form>
+      </Modal>
+
+      {/* MODAL: WITHDRAW REGISTRATION */}
+      <Modal
+        isOpen={withdrawModalOpen}
+        onClose={() => setWithdrawModalOpen(false)}
+        title="Withdraw Team Registration"
+        description="Are you sure you want to withdraw your team from this event?"
+        confirmLabel="Yes, Withdraw Team"
+        onConfirm={handleWithdraw}
+        isLoading={isWithdrawing}
+      >
+        <div className="space-y-3 text-xs text-slate-700">
+          <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-800">
+            <span className="font-bold">Warning:</span> Withdrawing will remove your team from the active event participation list. You will not be able to participate or vote.
+          </div>
+          <p>
+            You can contact the administrator if you need to be reinstated before registration closes.
+          </p>
+        </div>
+      </Modal>
+
+      {/* MODAL: ADD ROSTER MEMBER */}
+      <Modal
+        isOpen={addMemberModalOpen}
+        onClose={() => setAddMemberModalOpen(false)}
+        title="Add Team Member"
+        description="Add an additional member to your official team roster."
+        confirmLabel="Add Member"
+        onConfirm={handleAddMember}
+        isLoading={isAddingMember}
+      >
+        <form onSubmit={handleAddMember} className="space-y-3 text-xs">
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Member Full Name</label>
+            <input
+              type="text"
+              required
+              placeholder="e.g. Jane Doe"
+              value={newMemberName}
+              onChange={(e) => setNewMemberName(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-[#b80000] outline-none"
+            />
+          </div>
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Role / Specialization</label>
+            <input
+              type="text"
+              placeholder="e.g. Frontend Engineer, Designer"
+              value={newMemberRole}
+              onChange={(e) => setNewMemberRole(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-[#b80000] outline-none"
+            />
+          </div>
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Email (Optional)</label>
+            <input
+              type="email"
+              placeholder="jane@example.com"
+              value={newMemberEmail}
+              onChange={(e) => setNewMemberEmail(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-[#b80000] outline-none"
+            />
+          </div>
+        </form>
       </Modal>
     </div>
   );

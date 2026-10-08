@@ -20,19 +20,29 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Event not found." }, { status: 404 });
     }
 
-    const isPubliclyAllowed =
-      event.leaderboard_public ||
-      event.status === "RESULTS_PUBLISHED" ||
-      event.status === "ARCHIVED" ||
-      event.status === "VOTING_OPEN";
+    const visibility = event.leaderboard_visibility || (event.leaderboard_public ? "PUBLIC" : "HIDDEN");
+    const isFinalStage = event.status === "RESULTS_PUBLISHED" || event.status === "ARCHIVED";
 
-    if (!isAdmin && !isPubliclyAllowed) {
+    let isVisible = false;
+    if (isAdmin) {
+      isVisible = true;
+    } else if (visibility === "PUBLIC") {
+      isVisible = true;
+    } else if (visibility === "MEMBERS_ONLY" && session?.role === "team") {
+      isVisible = true;
+    } else if (visibility === "FINAL" && isFinalStage) {
+      isVisible = true;
+    } else if (event.leaderboard_public || isFinalStage) {
+      isVisible = true;
+    }
+
+    if (!isVisible) {
       return NextResponse.json({
         eventId: event.id,
         eventName: event.name,
         isVisible: false,
         status: event.status,
-        message: "The leaderboard is not currently published for this event.",
+        message: "The leaderboard is currently hidden or restricted for this event.",
         leaderboard: [],
       });
     }
