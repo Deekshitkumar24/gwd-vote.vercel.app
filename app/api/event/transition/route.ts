@@ -39,7 +39,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, event: updated });
     }
 
-    if (targetStatus !== transition.nextStatus) {
+    const isAllowedShortcut =
+      (currentEvent.status === "VOTING_CLOSED" && targetStatus === "RESULTS_PUBLISHED");
+
+    if (targetStatus !== transition.nextStatus && !isAllowedShortcut) {
       return NextResponse.json(
         { error: `Invalid transition from ${currentEvent.status} to ${targetStatus}.` },
         { status: 400 }
