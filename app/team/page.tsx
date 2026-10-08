@@ -71,8 +71,9 @@ export default function TeamDashboardPage() {
         return;
       }
       setSessionUser(authData.user);
+      const evId = authData.user.eventId;
 
-      const eventRes = await fetch("/api/event/status");
+      const eventRes = await fetch(`/api/event/status?eventId=${encodeURIComponent(evId || "")}`);
       const eData = await eventRes.json();
       setEventData(eData);
 
@@ -120,8 +121,9 @@ export default function TeamDashboardPage() {
 
   // 3. Load Leaderboard
   const loadLeaderboardData = useCallback(async () => {
+    if (!sessionUser?.eventId) return;
     try {
-      const res = await fetch("/api/leaderboard");
+      const res = await fetch(`/api/leaderboard?eventId=${encodeURIComponent(sessionUser.eventId)}`);
       const data = await res.json();
       setLeaderboard(data.leaderboard || []);
       setLeaderboardPublic(Boolean(data.isVisible));
@@ -129,29 +131,32 @@ export default function TeamDashboardPage() {
     } catch (e) {
       console.error(e);
     }
-  }, []);
+  }, [sessionUser?.eventId]);
 
   // 4. Load Announcements
   const loadAnnouncements = useCallback(async () => {
+    if (!sessionUser?.eventId) return;
     try {
-      const res = await fetch("/api/announcements");
+      const res = await fetch(`/api/announcements?eventId=${encodeURIComponent(sessionUser.eventId)}`);
       const data = await res.json();
       setAnnouncements(data.announcements || []);
     } catch (e) {
       console.error(e);
     }
-  }, []);
+  }, [sessionUser?.eventId]);
 
   // 5. Load Discussions
   const loadDiscussions = useCallback(async () => {
+    if (!sessionUser?.eventId) return;
     try {
-      const res = await fetch("/api/discussions");
+      const res = await fetch(`/api/discussions?eventId=${encodeURIComponent(sessionUser.eventId)}`);
       const data = await res.json();
       setDiscussions(data.messages || []);
     } catch (e) {
       console.error(e);
     }
-  }, []);
+  }, [sessionUser?.eventId]);
+
 
   useEffect(() => {
     if (activeTab === "voting") loadVotingData();

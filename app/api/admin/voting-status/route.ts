@@ -10,8 +10,11 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 
-    const approvedTeams = Database.getApprovedTeams();
-    const allRatings = Database.getAllRatings();
+    const { searchParams } = new URL(req.url);
+    const eventId = searchParams.get("eventId") || Database.getActiveEventId();
+
+    const approvedTeams = Database.getApprovedTeams(eventId);
+    const allRatings = Database.getAllRatings(eventId);
     const totalRequired = Math.max(0, approvedTeams.length - 1);
 
     const statusList = approvedTeams.map((team) => {
@@ -52,6 +55,7 @@ export async function GET(req: NextRequest) {
           approvedTeams.length > 0 ? Math.round((submittedCount / approvedTeams.length) * 100) : 0,
       },
       teams: statusList,
+      eventId,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || "Failed to load voting status" }, { status: 500 });

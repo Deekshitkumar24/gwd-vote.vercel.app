@@ -20,15 +20,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Your ballot has already been submitted." }, { status: 409 });
     }
 
-    const event = Database.getEvent();
-    if (event.status !== "VOTING_OPEN") {
+    const eventId = currentTeam.event_id;
+    const event = Database.getEvent(eventId);
+    if (!event || event.status !== "VOTING_OPEN") {
       return NextResponse.json({ error: "Voting is not currently open for submission." }, { status: 403 });
     }
 
-    const allApproved = Database.getApprovedTeams();
+    // Dynamic targets: all approved teams in THIS event except self
+    const allApproved = Database.getApprovedTeams(eventId);
     const eligibleTargets = allApproved.filter((t) => t.id !== currentTeam.id).map((t) => t.id);
 
-    const savedRatings = Database.getRatingsByRater(currentTeam.id).map((r) => ({
+    const savedRatings = Database.getRatingsByRater(eventId, currentTeam.id).map((r) => ({
       targetTeamId: r.target_team_id,
       score: r.score,
     }));
@@ -37,7 +39,7 @@ export async function POST(req: NextRequest) {
       currentTeam.id,
       savedRatings,
       eligibleTargets,
-      5
+      event.max_tens || 5
     );
 
     if (!validation.valid) {
@@ -50,7 +52,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const updated = await Database.submitFinalBallot(currentTeam.id);
+    const updated = await Database.submitFinalBallot(eventId, currentTeam.id);
 
     return NextResponse.json({
       success: true,

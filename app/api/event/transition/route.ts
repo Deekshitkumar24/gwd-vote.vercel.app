@@ -12,20 +12,33 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { targetStatus } = body;
+    const { eventId, targetStatus } = body;
 
-    const currentEvent = Database.getEvent();
+    const targetEvId = eventId || Database.getActiveEventId();
+    const currentEvent = Database.getEvent(targetEvId);
+
+    if (!currentEvent) {
+      return NextResponse.json({ error: "Event not found." }, { status: 404 });
+    }
+
+    // Historical event protection: Archived events cannot be modified
+    if (currentEvent.status === "ARCHIVED") {
+      return NextResponse.json(
+        { error: "This event has been concluded and archived. It cannot be modified." },
+        { status: 400 }
+      );
+    }
+
     const transition = WORKFLOW_TRANSITIONS[currentEvent.status];
 
     if (!targetStatus) {
       if (!transition.nextStatus) {
         return NextResponse.json({ error: "Event is already in its final state." }, { status: 400 });
       }
-      const updated = await Database.updateEventStatus(transition.nextStatus);
+      const updated = await Database.updateEventStatus(currentEvent.id, transition.nextStatus);
       return NextResponse.json({ success: true, event: updated });
     }
 
-    // If explicit targetStatus requested, ensure it's valid
     if (targetStatus !== transition.nextStatus) {
       return NextResponse.json(
         { error: `Invalid transition from ${currentEvent.status} to ${targetStatus}.` },
@@ -33,7 +46,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const updated = await Database.updateEventStatus(targetStatus as EventStatus);
+    const updated = await Database.updateEventStatus(currentEvent.id, targetStatus as EventStatus);
     return NextResponse.json({ success: true, event: updated });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || "Failed to update status" }, { status: 500 });

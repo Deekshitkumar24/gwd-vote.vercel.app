@@ -19,9 +19,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Your ballot is already submitted and locked." }, { status: 403 });
     }
 
-    const event = Database.getEvent();
-    if (event.status !== "VOTING_OPEN") {
-      return NextResponse.json({ error: "Voting is not currently open." }, { status: 403 });
+    const eventId = currentTeam.event_id;
+    const event = Database.getEvent(eventId);
+    if (!event || event.status !== "VOTING_OPEN") {
+      return NextResponse.json({ error: "Voting is not currently open for this event." }, { status: 403 });
     }
 
     const body = await req.json();
@@ -35,9 +36,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "A team cannot rate itself." }, { status: 400 });
     }
 
+    // Target team must belong to the exact same event!
     const targetTeam = Database.getTeamById(targetTeamId);
-    if (!targetTeam || targetTeam.status !== "APPROVED") {
-      return NextResponse.json({ error: "Target team is not an eligible approved team." }, { status: 400 });
+    if (!targetTeam || targetTeam.event_id !== eventId || targetTeam.status !== "APPROVED") {
+      return NextResponse.json(
+        { error: "Target team is not an eligible participating team in this event." },
+        { status: 400 }
+      );
     }
 
     const numScore = Number(score);
@@ -45,32 +50,35 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Rating must be an integer between 1 and 10." }, { status: 400 });
     }
 
-    // Check max 5 tens rule
+    const maxTensAllowed = event.max_tens || 5;
+
+    // Check max tens rule
     if (numScore === 10) {
-      const existingRatings = Database.getRatingsByRater(currentTeam.id);
+      const existingRatings = Database.getRatingsByRater(eventId, currentTeam.id);
       const otherTens = existingRatings.filter(
         (r) => r.target_team_id !== targetTeamId && r.score === 10
       ).length;
 
-      if (otherTens >= 5) {
+      if (otherTens >= maxTensAllowed) {
         return NextResponse.json(
-          { error: "You can award a rating of 10 to a maximum of 5 teams. 10s used: 5/5." },
+          {
+            error: `You can award a rating of 10 to a maximum of ${maxTensAllowed} teams. 10s used: ${maxTensAllowed}/${maxTensAllowed}.`,
+          },
           { status: 400 }
         );
       }
     }
 
-    const saved = await Database.saveDraftRating(currentTeam.id, targetTeamId, numScore);
+    const saved = await Database.saveDraftRating(eventId, currentTeam.id, targetTeamId, numScore);
 
-    // Return current count of tens
-    const allRatings = Database.getRatingsByRater(currentTeam.id);
+    const allRatings = Database.getRatingsByRater(eventId, currentTeam.id);
     const tensCount = allRatings.filter((r) => r.score === 10).length;
 
     return NextResponse.json({
       success: true,
       rating: saved,
       tensUsed: tensCount,
-      maxTens: 5,
+      maxTens: maxTensAllowed,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || "Failed to save rating" }, { status: 500 });

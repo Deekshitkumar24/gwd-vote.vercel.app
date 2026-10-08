@@ -10,9 +10,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 
-    const approvedTeams = Database.getApprovedTeams();
+    const { searchParams } = new URL(req.url);
+    const eventId = searchParams.get("eventId") || Database.getActiveEventId();
+
+    const approvedTeams = Database.getApprovedTeams(eventId);
     const teams = approvedTeams.map((t) => ({
       id: t.id,
+      eventId: t.event_id,
       code: t.code,
       name: t.name,
       leaderName: t.leader_name,
@@ -26,7 +30,7 @@ export async function GET(req: NextRequest) {
       submittedAt: t.submitted_at,
     }));
 
-    return NextResponse.json({ teams });
+    return NextResponse.json({ teams, eventId });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || "Failed to load teams" }, { status: 500 });
   }

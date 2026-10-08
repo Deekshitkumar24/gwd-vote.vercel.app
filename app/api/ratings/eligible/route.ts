@@ -18,8 +18,13 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const event = Database.getEvent();
-    const allowedStatuses = ["VOTING_OPEN", "VOTING_CLOSED", "RESULTS_READY", "RESULTS_PUBLISHED"];
+    const eventId = currentTeam.event_id;
+    const event = Database.getEvent(eventId);
+    if (!event) {
+      return NextResponse.json({ error: "Event not found." }, { status: 404 });
+    }
+
+    const allowedStatuses = ["VOTING_OPEN", "VOTING_CLOSED", "RESULTS_READY", "RESULTS_PUBLISHED", "ARCHIVED"];
     if (!allowedStatuses.includes(event.status)) {
       return NextResponse.json(
         { error: "Voting is not currently accessible for this event." },
@@ -27,8 +32,8 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Dynamic Team Count: Return all approved teams EXCEPT self
-    const allApproved = Database.getApprovedTeams();
+    // Dynamic Team Count: Return all approved teams in THIS event EXCEPT self
+    const allApproved = Database.getApprovedTeams(eventId);
     const eligibleTargets = allApproved
       .filter((t) => t.id !== currentTeam.id)
       .map((t) => ({
@@ -39,10 +44,14 @@ export async function GET(req: NextRequest) {
         description: t.description || "",
       }));
 
+    const maxTensAllowed = Math.min(event.max_tens || 5, eligibleTargets.length);
+
     return NextResponse.json({
+      eventId,
+      eventName: event.name,
       eligibleTeams: eligibleTargets,
       totalRequired: eligibleTargets.length,
-      maxTensAllowed: Math.min(5, eligibleTargets.length),
+      maxTensAllowed,
       isLocked: currentTeam.submitted_at !== null || event.status !== "VOTING_OPEN",
       submittedAt: currentTeam.submitted_at,
     });

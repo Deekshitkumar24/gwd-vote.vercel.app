@@ -1,10 +1,10 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { Plus, Trash2, CheckCircle2, AlertCircle, ArrowRight } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Plus, Trash2, CheckCircle2, AlertCircle, ArrowRight, Calendar, Layers } from "lucide-react";
 
 interface MemberInput {
   name: string;
@@ -12,9 +12,22 @@ interface MemberInput {
   email: string;
 }
 
-export default function RegisterPage() {
+interface EventSummary {
+  id: string;
+  name: string;
+  description: string;
+  status: string;
+  isActive: boolean;
+}
+
+function RegisterContent() {
   const router = useRouter();
-  const [eventStatus, setEventStatus] = useState<string | null>(null);
+  const searchParams = useSearchParams();
+  const queryEventId = searchParams.get("eventId");
+
+  const [events, setEvents] = useState<EventSummary[]>([]);
+  const [selectedEventId, setSelectedEventId] = useState<string>("");
+  const [currentEvent, setCurrentEvent] = useState<EventSummary | null>(null);
   const [isStatusLoading, setIsStatusLoading] = useState(true);
 
   const [teamName, setTeamName] = useState("");
@@ -31,19 +44,39 @@ export default function RegisterPage() {
     code: string;
     name: string;
     leaderName: string;
+    eventName?: string;
   } | null>(null);
 
   useEffect(() => {
-    fetch("/api/event/status")
+    fetch("/api/events/public")
       .then((res) => res.json())
       .then((data) => {
-        if (data.event) {
-          setEventStatus(data.event.status);
+        const evList: EventSummary[] = data.events || [];
+        setEvents(evList);
+
+        // Determine default event: query param > open registration event > active event > first event
+        let chosen = queryEventId ? evList.find((e) => e.id === queryEventId) : null;
+        if (!chosen) {
+          chosen = evList.find((e) => e.status === "REGISTRATION_OPEN") ||
+                   evList.find((e) => e.id === data.activeEventId) ||
+                   evList[0] ||
+                   null;
+        }
+
+        if (chosen) {
+          setSelectedEventId(chosen.id);
+          setCurrentEvent(chosen);
         }
       })
       .catch((e) => console.error(e))
       .finally(() => setIsStatusLoading(false));
-  }, []);
+  }, [queryEventId]);
+
+  const handleEventChange = (evId: string) => {
+    setSelectedEventId(evId);
+    const ev = events.find((e) => e.id === evId) || null;
+    setCurrentEvent(ev);
+  };
 
   const addMemberRow = () => {
     setMembers([...members, { name: "", role: "Member", email: "" }]);
@@ -69,6 +102,7 @@ export default function RegisterPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          eventId: selectedEventId,
           name: teamName,
           leader_name: leaderName,
           leader_email: leaderEmail,
@@ -84,7 +118,12 @@ export default function RegisterPage() {
         throw new Error(data.error || "Registration failed");
       }
 
-      setRegisteredTeam(data.team);
+      setRegisteredTeam({
+        code: data.team.code,
+        name: data.team.name,
+        leaderName: data.team.leader_name,
+        eventName: currentEvent?.name,
+      });
     } catch (err: any) {
       setError(err.message || "Failed to submit registration.");
     } finally {
@@ -100,8 +139,8 @@ export default function RegisterPage() {
     );
   }
 
-  // Registration closed notice
-  if (eventStatus && eventStatus !== "REGISTRATION_OPEN") {
+  // Registration closed notice if the selected event is not in REGISTRATION_OPEN
+  if (currentEvent && currentEvent.status !== "REGISTRATION_OPEN") {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
         <div className="max-w-md mx-auto w-full bg-white p-8 border border-slate-200 rounded-xl shadow-xs text-center">
@@ -110,9 +149,28 @@ export default function RegisterPage() {
           </div>
           <h2 className="text-xl font-bold text-slate-900">Registration is Closed</h2>
           <p className="mt-2 text-sm text-slate-600">
-            Team registration is not currently open for this event. Current stage:{" "}
-            <span className="font-semibold text-slate-800">{eventStatus.replace(/_/g, " ")}</span>.
+            Registration is not currently open for{" "}
+            <span className="font-semibold text-slate-800">{currentEvent.name}</span>. Current stage:{" "}
+            <span className="font-semibold text-slate-800">{currentEvent.status.replace(/_/g, " ")}</span>.
           </p>
+
+          {events.length > 1 && (
+            <div className="mt-4 text-left border-t border-slate-100 pt-3">
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Select Another Event:</label>
+              <select
+                value={selectedEventId}
+                onChange={(e) => handleEventChange(e.target.value)}
+                className="w-full text-xs py-2 px-3 border border-slate-300 rounded-lg bg-white"
+              >
+                {events.map((ev) => (
+                  <option key={ev.id} value={ev.id}>
+                    {ev.name} ({ev.status.replace(/_/g, " ")})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div className="mt-6 flex flex-col space-y-2">
             <Link
               href="/login"
@@ -142,7 +200,8 @@ export default function RegisterPage() {
           </div>
           <h2 className="text-2xl font-bold text-slate-900">Registration Submitted!</h2>
           <p className="mt-1 text-sm text-slate-600">
-            Your team has been successfully registered and is pending organizer approval.
+            Your team has been successfully registered for{" "}
+            <span className="font-semibold text-slate-800">{registeredTeam.eventName || "the event"}</span> and is pending organizer approval.
           </p>
 
           {/* Generated Team ID Card */}
@@ -198,121 +257,154 @@ export default function RegisterPage() {
             Register Your Team
           </h1>
           <p className="mt-1 text-sm text-slate-600">
-            Fill in your team details to join the GWD Event showcase and rating platform.
+            Enter team details and member roster to join the event evaluation.
           </p>
         </div>
 
-        {error && (
-          <div className="mb-6 p-4 rounded-lg bg-red-50 border border-red-200 flex items-start space-x-2 text-sm text-red-700 animate-in fade-in">
-            <AlertCircle className="w-5 h-5 mt-0.5 flex-shrink-0 text-[#b80000]" />
-            <div>
-              <p className="font-semibold">Unable to register</p>
-              <p className="mt-0.5">{error}</p>
+        {/* Event Selection Banner */}
+        {events.length > 0 && (
+          <div className="mb-6 p-4 bg-white border border-slate-200 rounded-xl shadow-2xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center space-x-2.5">
+              <Layers className="w-5 h-5 text-[#b80000]" />
+              <div>
+                <div className="text-xs text-slate-500 font-semibold uppercase tracking-wider">Target Event</div>
+                <div className="text-sm font-bold text-slate-900">{currentEvent?.name || "Selected Event"}</div>
+              </div>
             </div>
+            {events.length > 1 && (
+              <select
+                value={selectedEventId}
+                onChange={(e) => handleEventChange(e.target.value)}
+                className="text-xs py-1.5 px-3 border border-slate-300 rounded-md bg-slate-50 font-medium text-slate-800"
+              >
+                {events.map((ev) => (
+                  <option key={ev.id} value={ev.id}>
+                    {ev.name} ({ev.status.replace(/_/g, " ")})
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="bg-white p-6 sm:p-8 rounded-xl border border-slate-200 shadow-xs space-y-6">
-          {/* Section 1: Team & Leader Basics */}
-          <div>
-            <h2 className="text-base font-bold text-slate-900 pb-2 border-b border-slate-100">
+        {/* Error Notification */}
+        {error && (
+          <div className="mb-6 p-4 rounded-lg bg-red-50 border border-red-200 flex items-start space-x-3 text-sm text-[#b80000]">
+            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {/* Registration Form */}
+        <form onSubmit={handleSubmit} className="bg-white border border-slate-200 rounded-xl shadow-xs p-6 sm:p-8 space-y-6">
+          <div className="space-y-4">
+            <h2 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
               1. Team Information
             </h2>
-            <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                  Team Name *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Apex Innovators"
-                  value={teamName}
-                  onChange={(e) => setTeamName(e.target.value)}
-                  className="mt-1 w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#b80000] focus:border-transparent outline-none"
-                />
-              </div>
 
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                Team Name *
+              </label>
+              <input
+                type="text"
+                required
+                value={teamName}
+                onChange={(e) => setTeamName(e.target.value)}
+                placeholder="e.g., CodeCrafters Alpha"
+                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#b80000]/20 focus:border-[#b80000]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                Project / Team Description
+              </label>
+              <textarea
+                rows={3}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Brief summary of your application or team project..."
+                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#b80000]/20 focus:border-[#b80000]"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-4 pt-2">
+            <h2 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
+              2. Team Leader & Login Credentials
+            </h2>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                  Team Leader Name *
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Leader Name *
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Jane Doe"
                   value={leaderName}
                   onChange={(e) => setLeaderName(e.target.value)}
-                  className="mt-1 w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#b80000] focus:border-transparent outline-none"
+                  placeholder="e.g., Alex Johnson"
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#b80000]/20 focus:border-[#b80000]"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
                   Leader Email *
                 </label>
                 <input
                   type="email"
                   required
-                  placeholder="jane@example.com"
                   value={leaderEmail}
                   onChange={(e) => setLeaderEmail(e.target.value)}
-                  className="mt-1 w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#b80000] focus:border-transparent outline-none"
+                  placeholder="alex@example.com"
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#b80000]/20 focus:border-[#b80000]"
                 />
               </div>
+            </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                  Contact / Phone
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Contact Phone / WhatsApp
                 </label>
                 <input
                   type="text"
-                  placeholder="+1 (555) 000-0000"
                   value={contact}
                   onChange={(e) => setContact(e.target.value)}
-                  className="mt-1 w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#b80000] focus:border-transparent outline-none"
+                  placeholder="+1 (555) 000-0000"
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#b80000]/20 focus:border-[#b80000]"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                  Create Team Password *
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Team Password *
                 </label>
                 <input
                   type="password"
                   required
-                  placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="mt-1 w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#b80000] focus:border-transparent outline-none"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                  Brief Project / Team Description
-                </label>
-                <textarea
-                  rows={2}
-                  placeholder="Briefly describe what your team is building or showcasing..."
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className="mt-1 w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#b80000] focus:border-transparent outline-none"
+                  placeholder="Minimum 4 characters"
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#b80000]/20 focus:border-[#b80000]"
                 />
               </div>
             </div>
           </div>
 
-          {/* Section 2: Team Members */}
-          <div>
-            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+          {/* Members Roster */}
+          <div className="space-y-4 pt-2">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
               <h2 className="text-base font-bold text-slate-900">
-                2. Additional Team Members ({members.length})
+                3. Team Members (Optional)
               </h2>
               <button
                 type="button"
                 onClick={addMemberRow}
-                className="inline-flex items-center space-x-1 text-xs font-semibold text-[#b80000] hover:text-[#990000] bg-red-50 hover:bg-red-100 px-2.5 py-1 rounded-md transition-colors"
+                className="inline-flex items-center space-x-1.5 text-xs font-bold text-[#b80000] hover:text-[#990000] px-2.5 py-1 rounded bg-red-50 hover:bg-red-100 transition-colors"
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>Add Member</span>
@@ -320,36 +412,38 @@ export default function RegisterPage() {
             </div>
 
             {members.length === 0 ? (
-              <p className="mt-3 text-xs text-slate-500 italic">
-                Team leader is automatically included as member #1. Click &quot;Add Member&quot; above to add more teammates.
+              <p className="text-xs text-slate-500 italic py-2">
+                No additional members added yet. Click &quot;Add Member&quot; if you want to record other teammates.
               </p>
             ) : (
-              <div className="mt-3 space-y-2">
+              <div className="space-y-3">
                 {members.map((m, idx) => (
-                  <div
-                    key={idx}
-                    className="flex flex-col sm:flex-row items-center gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg"
-                  >
+                  <div key={idx} className="flex items-center gap-2">
                     <input
                       type="text"
-                      placeholder={`Member ${idx + 2} Name`}
+                      placeholder="Member Name"
                       value={m.name}
                       onChange={(e) => updateMemberRow(idx, "name", e.target.value)}
-                      className="w-full sm:flex-1 px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded focus:ring-1 focus:ring-[#b80000] outline-none"
-                      required
+                      className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:border-[#b80000]"
                     />
                     <input
                       type="text"
-                      placeholder="Role (e.g. Frontend, Designer)"
+                      placeholder="Role (e.g. Frontend)"
                       value={m.role}
                       onChange={(e) => updateMemberRow(idx, "role", e.target.value)}
-                      className="w-full sm:w-44 px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded focus:ring-1 focus:ring-[#b80000] outline-none"
+                      className="w-32 px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:border-[#b80000]"
+                    />
+                    <input
+                      type="email"
+                      placeholder="Email"
+                      value={m.email}
+                      onChange={(e) => updateMemberRow(idx, "email", e.target.value)}
+                      className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:border-[#b80000]"
                     />
                     <button
                       type="button"
                       onClick={() => removeMemberRow(idx)}
-                      className="self-end sm:self-auto text-slate-400 hover:text-red-600 p-1.5 transition-colors"
-                      title="Remove Member"
+                      className="p-2 text-slate-400 hover:text-red-600 rounded transition-colors"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -359,37 +453,45 @@ export default function RegisterPage() {
             )}
           </div>
 
-          {/* Submission notice */}
-          <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg text-xs text-slate-600">
-            <span className="font-semibold text-slate-900">Note:</span> Your unique Team ID (e.g. GWD-101) will be assigned automatically upon submission.
-          </div>
-
-          {/* Submit button */}
-          <div className="flex items-center justify-between pt-2">
-            <Link
-              href="/login"
-              className="text-xs font-semibold text-slate-600 hover:text-slate-900"
-            >
-              Already registered? Sign in
-            </Link>
-
+          <div className="pt-4 border-t border-slate-200">
             <button
               type="submit"
               disabled={isSubmitting}
-              className="inline-flex items-center space-x-2 py-2.5 px-6 text-sm font-semibold text-white bg-[#b80000] hover:bg-[#990000] rounded-lg shadow-2xs transition-colors disabled:opacity-50"
+              className="w-full py-3 px-4 font-bold text-white bg-[#b80000] hover:bg-[#990000] disabled:bg-slate-300 rounded-lg shadow-sm transition-colors flex items-center justify-center space-x-2"
             >
               {isSubmitting ? (
-                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              ) : (
                 <>
-                  <span>Submit Registration</span>
-                  <ArrowRight className="w-4 h-4" />
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <span>Submitting Registration...</span>
                 </>
+              ) : (
+                <span>Submit Team Registration</span>
               )}
             </button>
           </div>
         </form>
+
+        <div className="mt-6 text-center text-xs text-slate-500">
+          Already registered?{" "}
+          <Link href="/login" className="font-semibold text-[#b80000] hover:underline">
+            Sign In with your Team ID
+          </Link>
+        </div>
       </div>
     </div>
+  );
+}
+
+export default function RegisterPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+          <div className="w-8 h-8 border-3 border-[#b80000] border-t-transparent rounded-full animate-spin" />
+        </div>
+      }
+    >
+      <RegisterContent />
+    </Suspense>
   );
 }

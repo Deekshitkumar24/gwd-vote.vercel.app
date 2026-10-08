@@ -4,6 +4,7 @@ import crypto from "crypto";
 export interface SessionPayload {
   role: "admin" | "team";
   email?: string;
+  eventId?: string;
   teamId?: string;
   teamCode?: string;
   teamName?: string;

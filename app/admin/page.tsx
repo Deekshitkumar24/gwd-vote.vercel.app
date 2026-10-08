@@ -5,6 +5,9 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  Calendar,
+  Plus,
+  Copy,
   Users,
   CheckCircle,
   Clock,
@@ -29,6 +32,9 @@ import {
   LogOut,
   ChevronRight,
   ExternalLink,
+  Lock,
+  Layers,
+  ChevronDown,
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { Modal } from "@/components/Modal";
@@ -36,17 +42,40 @@ import { Modal } from "@/components/Modal";
 export default function AdminDashboardPage() {
   const router = useRouter();
 
-  // Authentication & Event State
+  // Authentication & Global Multi-Event State
   const [session, setSession] = useState<{ role: string; email: string } | null>(null);
+  const [eventsList, setEventsList] = useState<any[]>([]);
+  const [selectedEventId, setSelectedEventId] = useState<string>("");
   const [eventData, setEventData] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Active Admin Tab
   const [activeTab, setActiveTab] = useState<
-    "overview" | "registrations" | "teams" | "voting" | "leaderboard" | "announcements" | "discussion" | "audits"
+    "overview" | "events" | "registrations" | "teams" | "voting" | "leaderboard" | "announcements" | "discussion" | "audits"
   >("overview");
 
   // Workflow confirmation modal state
   const [workflowModalOpen, setWorkflowModalOpen] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
+
+  // Create Event 6-Step Setup Modal
+  const [createEventModalOpen, setCreateEventModalOpen] = useState(false);
+  const [createStep, setCreateStep] = useState<number>(1);
+  const [newEventName, setNewEventName] = useState("");
+  const [newEventDesc, setNewEventDesc] = useState("");
+  const [newRegStart, setNewRegStart] = useState("");
+  const [newRegEnd, setNewRegEnd] = useState("");
+  const [newVotingStart, setNewVotingStart] = useState("");
+  const [newVotingEnd, setNewVotingEnd] = useState("");
+  const [newMaxTens, setNewMaxTens] = useState<number>(5);
+  const [newLeaderboardPublic, setNewLeaderboardPublic] = useState(false);
+  const [isCreatingEvent, setIsCreatingEvent] = useState(false);
+
+  // Duplicate Event Modal
+  const [duplicateModalOpen, setDuplicateModalOpen] = useState(false);
+  const [duplicateSourceEvent, setDuplicateSourceEvent] = useState<any | null>(null);
+  const [duplicateEventName, setDuplicateEventName] = useState("");
+  const [isDuplicating, setIsDuplicating] = useState(false);
 
   // Registrations section state
   const [registrations, setRegistrations] = useState<any[]>([]);
@@ -57,6 +86,12 @@ export default function AdminDashboardPage() {
   const [reviewAction, setReviewAction] = useState<"APPROVE" | "REQUEST_CHANGES" | "REJECT">("APPROVE");
   const [reviewNote, setReviewNote] = useState("");
   const [isReviewing, setIsReviewing] = useState(false);
+
+  // Ballot Unlock Modal
+  const [unlockModalOpen, setUnlockModalOpen] = useState(false);
+  const [unlockTargetTeam, setUnlockTargetTeam] = useState<any | null>(null);
+  const [unlockReason, setUnlockReason] = useState("");
+  const [isUnlocking, setIsUnlocking] = useState(false);
 
   // Approved teams list
   const [approvedTeams, setApprovedTeams] = useState<any[]>([]);
@@ -92,8 +127,8 @@ export default function AdminDashboardPage() {
     setTimeout(() => setFeedbackMessage(null), 4000);
   };
 
-  // 1. Fetch Session & Event Status
-  const loadStatus = useCallback(async () => {
+  // 1. Fetch Session & Events List
+  const loadEventsAndSession = useCallback(async () => {
     try {
       const authRes = await fetch("/api/auth/me");
       const authData = await authRes.json();
@@ -103,9 +138,13 @@ export default function AdminDashboardPage() {
       }
       setSession(authData.user);
 
-      const statusRes = await fetch("/api/event/status");
-      const sData = await statusRes.json();
-      setEventData(sData);
+      const eventsRes = await fetch("/api/admin/events");
+      const eventsData = await eventsRes.json();
+      const list = eventsData.events || [];
+      setEventsList(list);
+
+      const activeId = eventsData.activeEventId || list[0]?.id || "";
+      setSelectedEventId((prev) => (prev && list.some((e: any) => e.id === prev) ? prev : activeId));
     } catch (err) {
       console.error(err);
     } finally {
@@ -114,13 +153,33 @@ export default function AdminDashboardPage() {
   }, [router]);
 
   useEffect(() => {
-    loadStatus();
-  }, [loadStatus]);
+    loadEventsAndSession();
+  }, [loadEventsAndSession]);
 
-  // 2. Fetch Section-specific data
-  const loadRegistrations = useCallback(async () => {
+  // 2. Load Selected Event Details
+  const loadEventStatus = useCallback(async (evId: string) => {
+    if (!evId) return;
     try {
-      const q = new URLSearchParams();
+      const res = await fetch(`/api/event/status?eventId=${encodeURIComponent(evId)}`);
+      const sData = await res.json();
+      setEventData(sData);
+      setIsLeaderboardPublic(Boolean(sData?.event?.leaderboard_public));
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedEventId) {
+      loadEventStatus(selectedEventId);
+    }
+  }, [selectedEventId, loadEventStatus]);
+
+  // 3. Section Data Loaders (Strictly scoped by selectedEventId!)
+  const loadRegistrations = useCallback(async () => {
+    if (!selectedEventId) return;
+    try {
+      const q = new URLSearchParams({ eventId: selectedEventId });
       if (regSearch) q.set("search", regSearch);
       if (regStatusFilter !== "ALL") q.set("status", regStatusFilter);
       const res = await fetch(`/api/admin/registrations?${q.toString()}`);
@@ -129,69 +188,75 @@ export default function AdminDashboardPage() {
     } catch (e) {
       console.error(e);
     }
-  }, [regSearch, regStatusFilter]);
+  }, [selectedEventId, regSearch, regStatusFilter]);
 
   const loadApprovedTeams = useCallback(async () => {
+    if (!selectedEventId) return;
     try {
-      const res = await fetch("/api/admin/teams");
+      const res = await fetch(`/api/admin/teams?eventId=${encodeURIComponent(selectedEventId)}`);
       const data = await res.json();
       setApprovedTeams(data.teams || []);
     } catch (e) {
       console.error(e);
     }
-  }, []);
+  }, [selectedEventId]);
 
   const loadVotingStatus = useCallback(async () => {
+    if (!selectedEventId) return;
     try {
-      const res = await fetch("/api/admin/voting-status");
+      const res = await fetch(`/api/admin/voting-status?eventId=${encodeURIComponent(selectedEventId)}`);
       const data = await res.json();
       setVotingSummary(data.summary || null);
       setVotingTeams(data.teams || []);
     } catch (e) {
       console.error(e);
     }
-  }, []);
+  }, [selectedEventId]);
 
   const loadLeaderboard = useCallback(async () => {
+    if (!selectedEventId) return;
     try {
-      const res = await fetch("/api/leaderboard");
+      const res = await fetch(`/api/leaderboard?eventId=${encodeURIComponent(selectedEventId)}`);
       const data = await res.json();
       setLeaderboardData(data.leaderboard || []);
       setIsLeaderboardPublic(Boolean(data.leaderboardPublic));
     } catch (e) {
       console.error(e);
     }
-  }, []);
+  }, [selectedEventId]);
 
   const loadAnnouncements = useCallback(async () => {
+    if (!selectedEventId) return;
     try {
-      const res = await fetch("/api/announcements");
+      const res = await fetch(`/api/announcements?eventId=${encodeURIComponent(selectedEventId)}`);
       const data = await res.json();
       setAnnouncements(data.announcements || []);
     } catch (e) {
       console.error(e);
     }
-  }, []);
+  }, [selectedEventId]);
 
   const loadDiscussions = useCallback(async () => {
+    if (!selectedEventId) return;
     try {
-      const res = await fetch("/api/discussions");
+      const res = await fetch(`/api/discussions?eventId=${encodeURIComponent(selectedEventId)}`);
       const data = await res.json();
       setDiscussions(data.messages || []);
     } catch (e) {
       console.error(e);
     }
-  }, []);
+  }, [selectedEventId]);
 
   const loadAudits = useCallback(async () => {
+    if (!selectedEventId) return;
     try {
-      const res = await fetch("/api/audits");
+      const res = await fetch(`/api/audits?eventId=${encodeURIComponent(selectedEventId)}`);
       const data = await res.json();
       setAudits(data.audits || []);
     } catch (e) {
       console.error(e);
     }
-  }, []);
+  }, [selectedEventId]);
 
   useEffect(() => {
     if (activeTab === "registrations") loadRegistrations();
@@ -203,6 +268,7 @@ export default function AdminDashboardPage() {
     if (activeTab === "audits") loadAudits();
   }, [
     activeTab,
+    selectedEventId,
     loadRegistrations,
     loadApprovedTeams,
     loadVotingStatus,
@@ -214,26 +280,101 @@ export default function AdminDashboardPage() {
 
   // Lifecycle Transition Trigger
   const handleExecuteTransition = async () => {
-    if (!eventData?.nextAction?.nextStatus) return;
+    if (!eventData?.nextAction?.nextStatus || !selectedEventId) return;
     setIsTransitioning(true);
     try {
       const res = await fetch("/api/event/transition", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targetStatus: eventData.nextAction.nextStatus }),
+        body: JSON.stringify({
+          eventId: selectedEventId,
+          targetStatus: eventData.nextAction.nextStatus,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to update state");
 
       showFeedback(`Event state advanced to ${data.event.status.replace(/_/g, " ")}`);
       setWorkflowModalOpen(false);
-      await loadStatus();
+      await loadEventStatus(selectedEventId);
+      await loadEventsAndSession();
       if (activeTab === "voting") loadVotingStatus();
       if (activeTab === "leaderboard") loadLeaderboard();
     } catch (e: any) {
       showFeedback(e.message || "Failed to update event state", "error");
     } finally {
       setIsTransitioning(false);
+    }
+  };
+
+  // Create Event Submit
+  const handleCreateEventSubmit = async () => {
+    if (!newEventName.trim()) {
+      showFeedback("Event name is required.", "error");
+      return;
+    }
+    setIsCreatingEvent(true);
+    try {
+      const res = await fetch("/api/admin/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newEventName,
+          description: newEventDesc,
+          max_tens: newMaxTens,
+          leaderboard_public: newLeaderboardPublic,
+          registration_start: newRegStart,
+          registration_end: newRegEnd,
+          voting_start: newVotingStart,
+          voting_end: newVotingEnd,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Event creation failed");
+
+      showFeedback(`Event "${data.event.name}" created successfully in Draft mode!`);
+      setCreateEventModalOpen(false);
+      setCreateStep(1);
+      setNewEventName("");
+      setNewEventDesc("");
+      await loadEventsAndSession();
+      setSelectedEventId(data.event.id);
+      setActiveTab("overview");
+    } catch (e: any) {
+      showFeedback(e.message || "Failed to create event", "error");
+    } finally {
+      setIsCreatingEvent(false);
+    }
+  };
+
+  // Duplicate Event Settings
+  const handleDuplicateSubmit = async () => {
+    if (!duplicateSourceEvent) return;
+    setIsDuplicating(true);
+    try {
+      const res = await fetch("/api/admin/events/duplicate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceEventId: duplicateSourceEvent.id,
+          customName: duplicateEventName,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Duplication failed");
+
+      showFeedback(
+        `Settings duplicated to new event "${data.event.name}". Zero historical teams or votes copied.`
+      );
+      setDuplicateModalOpen(false);
+      setDuplicateSourceEvent(null);
+      await loadEventsAndSession();
+      setSelectedEventId(data.event.id);
+      setActiveTab("overview");
+    } catch (e: any) {
+      showFeedback(e.message || "Failed to duplicate settings", "error");
+    } finally {
+      setIsDuplicating(false);
     }
   };
 
@@ -260,7 +401,7 @@ export default function AdminDashboardPage() {
       setSelectedReg(null);
       setReviewNote("");
       loadRegistrations();
-      loadStatus();
+      loadEventStatus(selectedEventId);
     } catch (e: any) {
       showFeedback(e.message || "Failed to review team", "error");
     } finally {
@@ -268,14 +409,44 @@ export default function AdminDashboardPage() {
     }
   };
 
+  // Ballot Unlock handler
+  const handleUnlockSubmit = async () => {
+    if (!unlockTargetTeam || !unlockReason.trim()) return;
+    setIsUnlocking(true);
+    try {
+      const res = await fetch(`/api/admin/teams/${unlockTargetTeam.teamId || unlockTargetTeam.id}/unlock`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: unlockReason }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to unlock ballot");
+
+      showFeedback(`Ballot for ${unlockTargetTeam.teamName || unlockTargetTeam.name} unlocked.`);
+      setUnlockModalOpen(false);
+      setUnlockTargetTeam(null);
+      setUnlockReason("");
+      loadVotingStatus();
+      loadEventStatus(selectedEventId);
+    } catch (e: any) {
+      showFeedback(e.message || "Error unlocking ballot", "error");
+    } finally {
+      setIsUnlocking(false);
+    }
+  };
+
   // Toggle Leaderboard Public
   const handleToggleLeaderboardPublic = async () => {
+    if (!selectedEventId) return;
     setIsTogglingPublish(true);
     try {
       const res = await fetch("/api/leaderboard/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isPublic: !isLeaderboardPublic }),
+        body: JSON.stringify({
+          eventId: selectedEventId,
+          isPublic: !isLeaderboardPublic,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Toggle failed");
@@ -295,13 +466,14 @@ export default function AdminDashboardPage() {
   // Announcement handlers
   const handleCreateAnnouncement = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle.trim() || !newContent.trim()) return;
+    if (!newTitle.trim() || !newContent.trim() || !selectedEventId) return;
     setIsSavingAnnouncement(true);
     try {
       const res = await fetch("/api/announcements", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          eventId: selectedEventId,
           title: newTitle,
           content: newContent,
           is_pinned: newIsPinned,
@@ -328,7 +500,7 @@ export default function AdminDashboardPage() {
       const res = await fetch("/api/announcements", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id }),
+        body: JSON.stringify({ id, eventId: selectedEventId }),
       });
       if (res.ok) loadAnnouncements();
     } catch (e) {
@@ -339,7 +511,9 @@ export default function AdminDashboardPage() {
   const handleDeleteAnnouncement = async (id: string) => {
     if (!confirm("Are you sure you want to delete this announcement?")) return;
     try {
-      const res = await fetch(`/api/announcements?id=${id}`, { method: "DELETE" });
+      const res = await fetch(`/api/announcements?id=${id}&eventId=${encodeURIComponent(selectedEventId)}`, {
+        method: "DELETE",
+      });
       if (res.ok) {
         showFeedback("Announcement deleted.");
         loadAnnouncements();
@@ -353,7 +527,9 @@ export default function AdminDashboardPage() {
   const handleDeleteDiscussion = async (id: string) => {
     if (!confirm("Delete this discussion message?")) return;
     try {
-      const res = await fetch(`/api/discussions?id=${id}`, { method: "DELETE" });
+      const res = await fetch(`/api/discussions?id=${id}&eventId=${encodeURIComponent(selectedEventId)}`, {
+        method: "DELETE",
+      });
       if (res.ok) {
         showFeedback("Message deleted.");
         loadDiscussions();
@@ -374,7 +550,9 @@ export default function AdminDashboardPage() {
     );
   }
 
-  const currentStatus = eventData?.event?.status || "DRAFT";
+  const currentEvent = eventData?.event;
+  const currentStatus = currentEvent?.status || "DRAFT";
+  const isArchived = currentStatus === "ARCHIVED";
   const nextAction = eventData?.nextAction;
   const statusDesc = eventData?.statusDescription;
   const stats = eventData?.stats;
@@ -382,10 +560,16 @@ export default function AdminDashboardPage() {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
       <Navbar
-        eventName={eventData?.event?.name || "GWD Team Hackathon & Showcase"}
+        eventName={currentEvent?.name || "GWD Rating Platform"}
         eventStatus={currentStatus}
         userRole="admin"
         userLabel={session?.email || "Administrator"}
+        eventsList={eventsList.map((e) => ({ id: e.id, name: e.name, status: e.status }))}
+        selectedEventId={selectedEventId}
+        onSelectEvent={(id) => {
+          setSelectedEventId(id);
+          setActiveTab("overview");
+        }}
         onLogout={() => router.push("/login")}
       />
 
@@ -393,9 +577,7 @@ export default function AdminDashboardPage() {
       {feedbackMessage && (
         <div
           className={`sticky top-16 z-30 px-4 py-2.5 text-center text-sm font-semibold transition-all shadow-xs ${
-            feedbackMessage.type === "success"
-              ? "bg-emerald-600 text-white"
-              : "bg-red-600 text-white"
+            feedbackMessage.type === "success" ? "bg-emerald-600 text-white" : "bg-red-600 text-white"
           }`}
         >
           {feedbackMessage.text}
@@ -404,51 +586,83 @@ export default function AdminDashboardPage() {
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {/* Top Control Bar: Answers "Where am I?", "What is happening?", "What do I need to do next?" */}
+        {/* Multi-Event Control Header */}
         <section className="bg-white rounded-xl border border-slate-200 shadow-xs p-6 mb-6">
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
             {/* Where am I & What is happening */}
             <div className="space-y-1">
-              <div className="flex items-center space-x-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs uppercase font-extrabold tracking-wider text-[#b80000]">
                   GWD Control Center
                 </span>
                 <span className="text-slate-300">•</span>
-                <span className="text-xs text-slate-500 font-medium">
-                  {eventData?.event?.name}
+                <span className="text-xs text-slate-600 font-bold bg-slate-100 border border-slate-200 px-2 py-0.5 rounded">
+                  Event ID: {currentEvent?.id}
                 </span>
+                {isArchived && (
+                  <span className="text-xs font-bold text-slate-700 bg-slate-200 border border-slate-300 px-2.5 py-0.5 rounded-full flex items-center space-x-1">
+                    <Lock className="w-3 h-3" />
+                    <span>Completed & Archived (Read-Only)</span>
+                  </span>
+                )}
               </div>
-              <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight flex items-center space-x-3">
-                <span>{statusDesc?.title || currentStatus.replace(/_/g, " ")}</span>
-              </h1>
-              <p className="text-sm text-slate-600 max-w-2xl">
-                {statusDesc?.subtitle || "Manage event lifecycle, registrations, and voting."}
+
+              <div className="flex flex-wrap items-center gap-3">
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+                  {currentEvent?.name || "Event Overview"}
+                </h1>
+              </div>
+
+              <p className="text-xs sm:text-sm text-slate-600 max-w-2xl">
+                {isArchived
+                  ? "This event is completed and locked. All historical registrations, voting records, and leaderboard results are permanently preserved."
+                  : statusDesc?.subtitle || "Manage event lifecycle, registrations, and voting."}
               </p>
             </div>
 
-            {/* What do I need to do next? (Single Prominent Primary Action) */}
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-              {nextAction?.nextStatus ? (
+            {/* Top Primary Actions: Guided Next Action & "Create New Event" */}
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Prominent "Create New Event" Button */}
+              <button
+                onClick={() => {
+                  setCreateStep(1);
+                  setNewEventName("");
+                  setNewEventDesc("");
+                  setCreateEventModalOpen(true);
+                }}
+                className="inline-flex items-center space-x-2 px-4 py-2.5 rounded-lg text-xs sm:text-sm font-bold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 transition-colors"
+              >
+                <Plus className="w-4 h-4 text-[#b80000]" />
+                <span>Create New Event</span>
+              </button>
+
+              {/* Single Primary Action for Current State */}
+              {!isArchived && nextAction?.nextStatus && (
                 <button
                   onClick={() => setWorkflowModalOpen(true)}
-                  className="inline-flex items-center justify-center space-x-2 px-5 py-3 rounded-lg text-sm font-bold text-white bg-[#b80000] hover:bg-[#990000] shadow-sm transition-all group"
+                  className="inline-flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg text-xs sm:text-sm font-bold text-white bg-[#b80000] hover:bg-[#990000] shadow-2xs transition-all group"
                 >
                   <span>{nextAction.actionLabel}</span>
                   <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
                 </button>
-              ) : (
-                <div className="px-4 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-slate-100 text-slate-600 border border-slate-200">
-                  Event Completed
-                </div>
+              )}
+
+              {isArchived && (
+                <button
+                  onClick={() => setActiveTab("leaderboard")}
+                  className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-lg text-xs sm:text-sm font-bold text-white bg-[#b80000] hover:bg-[#990000] shadow-2xs transition-colors"
+                >
+                  <Trophy className="w-4 h-4" />
+                  <span>View Final Standings</span>
+                </button>
               )}
 
               <button
-                onClick={loadStatus}
+                onClick={() => loadEventStatus(selectedEventId)}
                 title="Refresh Status"
-                className="p-3 rounded-lg border border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors flex items-center justify-center"
+                className="p-2.5 rounded-lg border border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors flex items-center justify-center"
               >
                 <RefreshCw className="w-4 h-4" />
-                <span className="sr-only">Refresh</span>
               </button>
             </div>
           </div>
@@ -457,7 +671,11 @@ export default function AdminDashboardPage() {
           <div className="mt-5 pt-5 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-red-50/50 -mx-6 -mb-6 p-4 rounded-b-xl border-b border-red-100/50">
             <div className="text-xs sm:text-sm text-slate-700">
               <span className="font-bold text-[#b80000] mr-1.5">What happens next:</span>
-              <span>{statusDesc?.whatHappensNext}</span>
+              <span>
+                {isArchived
+                  ? "This event has officially concluded. You can review historical results or click 'Create New Event' to begin a fresh event."
+                  : statusDesc?.whatHappensNext}
+              </span>
             </div>
             {currentStatus === "REGISTRATION_OPEN" && (
               <button
@@ -480,7 +698,7 @@ export default function AdminDashboardPage() {
           </div>
         </section>
 
-        {/* Small Set of Real Statistics */}
+        {/* Real Statistics for Selected Event */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
             <div className="flex items-center justify-between">
@@ -508,7 +726,7 @@ export default function AdminDashboardPage() {
               {stats?.pendingReview ?? 0}
             </div>
             <div className="text-xs text-slate-500 mt-1">
-              Waiting organizer review
+              Awaiting approval
             </div>
           </div>
 
@@ -523,7 +741,7 @@ export default function AdminDashboardPage() {
               {stats?.approvedTeams ?? 0}
             </div>
             <div className="text-xs text-slate-500 mt-1">
-              Eligible for event rating
+              Participating in event
             </div>
           </div>
 
@@ -543,11 +761,12 @@ export default function AdminDashboardPage() {
           </div>
         </div>
 
-        {/* Clean Admin Navigation Tabs */}
+        {/* Clean Admin Navigation Tabs (Includes "Events") */}
         <div className="border-b border-slate-200 mb-6 bg-white rounded-t-xl px-2 shadow-2xs overflow-x-auto">
           <nav className="flex space-x-1 sm:space-x-2 min-w-max py-2">
             {[
               { id: "overview", label: "Overview", icon: ShieldCheck },
+              { id: "events", label: `Events Area (${eventsList.length})`, icon: Layers },
               {
                 id: "registrations",
                 label: `Registrations (${stats?.teamsRegistered ?? 0})`,
@@ -584,14 +803,155 @@ export default function AdminDashboardPage() {
           </nav>
         </div>
 
+        {/* TAB: EVENTS AREA (Core Multi-Event Management) */}
+        {activeTab === "events" && (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <h2 className="text-base sm:text-lg font-bold text-slate-900">
+                  All Platform Events ({eventsList.length})
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Manage unlimited separate events over time. Each event maintains completely isolated teams, voting, and results.
+                </p>
+              </div>
+
+              <button
+                onClick={() => {
+                  setCreateStep(1);
+                  setNewEventName("");
+                  setNewEventDesc("");
+                  setCreateEventModalOpen(true);
+                }}
+                className="inline-flex items-center space-x-2 px-4 py-2 text-xs sm:text-sm font-bold text-white bg-[#b80000] hover:bg-[#990000] rounded-lg shadow-2xs transition-colors self-start sm:self-auto"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Create New Event</span>
+              </button>
+            </div>
+
+            {/* Events Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {eventsList.map((ev) => {
+                const isCurrent = ev.id === selectedEventId;
+                const isEvArchived = ev.status === "ARCHIVED";
+
+                return (
+                  <div
+                    key={ev.id}
+                    className={`p-5 rounded-xl border transition-all flex flex-col justify-between ${
+                      isCurrent
+                        ? "bg-red-50/20 border-[#b80000] ring-1 ring-[#b80000] shadow-xs"
+                        : "bg-white border-slate-200 hover:border-slate-300 shadow-2xs"
+                    }`}
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <span className="font-mono text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                            {ev.id}
+                          </span>
+                          <h3 className="text-sm font-bold text-slate-900 mt-0.5 line-clamp-1">
+                            {ev.name}
+                          </h3>
+                        </div>
+
+                        <span
+                          className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border whitespace-nowrap ${
+                            ev.status === "REGISTRATION_OPEN"
+                              ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                              : ev.status === "VOTING_OPEN"
+                              ? "bg-blue-50 text-blue-800 border-blue-200"
+                              : ev.status === "RESULTS_PUBLISHED"
+                              ? "bg-purple-50 text-purple-800 border-purple-200"
+                              : isEvArchived
+                              ? "bg-slate-100 text-slate-700 border-slate-300"
+                              : "bg-amber-50 text-amber-800 border-amber-200"
+                          }`}
+                        >
+                          {ev.status.replace(/_/g, " ")}
+                        </span>
+                      </div>
+
+                      {ev.description && (
+                        <p className="text-xs text-slate-500 line-clamp-2">
+                          {ev.description}
+                        </p>
+                      )}
+
+                      {/* Event Stats summary */}
+                      <div className="grid grid-cols-3 gap-2 p-2.5 bg-slate-50 rounded-lg text-center text-xs">
+                        <div>
+                          <div className="text-[10px] text-slate-400 font-medium">Teams</div>
+                          <div className="font-bold text-slate-800">{ev.teamCount ?? 0}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-slate-400 font-medium">Approved</div>
+                          <div className="font-bold text-emerald-700">{ev.approvedCount ?? 0}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-slate-400 font-medium">Ballots</div>
+                          <div className="font-bold text-[#b80000]">{ev.submittedCount ?? 0}</div>
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] text-slate-400">
+                        Created: {new Date(ev.created_at).toLocaleDateString()}
+                      </div>
+                    </div>
+
+                    {/* Quick actions for this event */}
+                    <div className="pt-4 mt-4 border-t border-slate-100 flex items-center justify-between gap-2">
+                      <button
+                        onClick={() => {
+                          setSelectedEventId(ev.id);
+                          setActiveTab("overview");
+                          showFeedback(`Switched to managing "${ev.name}"`);
+                        }}
+                        className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-bold transition-colors ${
+                          isCurrent
+                            ? "bg-[#b80000] text-white"
+                            : "bg-slate-100 hover:bg-slate-200 text-slate-800"
+                        }`}
+                      >
+                        {isCurrent ? "Currently Active" : "Open / Manage"}
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setDuplicateSourceEvent(ev);
+                          setDuplicateEventName(`${ev.name} (Copy)`);
+                          setDuplicateModalOpen(true);
+                        }}
+                        className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:text-[#b80000] hover:bg-slate-50 transition-colors"
+                        title="Duplicate Settings to New Event"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* TAB 1: OVERVIEW */}
         {activeTab === "overview" && (
           <div className="space-y-6">
             {/* Event Workflow Stepper */}
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-xs">
-              <h2 className="text-base font-bold text-slate-900 mb-4">
-                Event Lifecycle Progress
-              </h2>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-base font-bold text-slate-900">
+                  Event Lifecycle Progress ({currentEvent?.name})
+                </h2>
+                {isArchived && (
+                  <span className="text-xs font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
+                    Archived
+                  </span>
+                )}
+              </div>
+
               <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
                 {[
                   { key: "DRAFT", label: "Draft" },
@@ -603,12 +963,12 @@ export default function AdminDashboardPage() {
                   { key: "RESULTS_READY", label: "Results Ready" },
                   { key: "RESULTS_PUBLISHED", label: "Published" },
                 ].map((step, idx) => {
-                  const isCurrent = currentStatus === step.key;
+                  const isCurrentStep = currentStatus === step.key;
                   return (
                     <div
                       key={step.key}
                       className={`p-3 rounded-lg border text-center transition-all ${
-                        isCurrent
+                        isCurrentStep
                           ? "bg-red-50 border-[#b80000] ring-1 ring-[#b80000]"
                           : "bg-slate-50 border-slate-200 text-slate-500"
                       }`}
@@ -616,12 +976,12 @@ export default function AdminDashboardPage() {
                       <div className="text-[10px] font-bold text-slate-400">Step {idx + 1}</div>
                       <div
                         className={`text-xs font-bold mt-0.5 truncate ${
-                          isCurrent ? "text-[#b80000]" : "text-slate-700"
+                          isCurrentStep ? "text-[#b80000]" : "text-slate-700"
                         }`}
                       >
                         {step.label}
                       </div>
-                      {isCurrent && (
+                      {isCurrentStep && (
                         <div className="mt-1 text-[9px] uppercase font-bold text-[#b80000] bg-white border border-red-200 rounded px-1 py-0.2">
                           ACTIVE
                         </div>
@@ -640,7 +1000,7 @@ export default function AdminDashboardPage() {
                   <span>Team Registrations</span>
                 </div>
                 <p className="text-xs text-slate-600">
-                  You have <span className="font-bold text-slate-900">{stats?.pendingReview ?? 0}</span> registrations waiting for review out of {stats?.teamsRegistered ?? 0} total.
+                  You have <span className="font-bold text-slate-900">{stats?.pendingReview ?? 0}</span> registrations waiting for review out of {stats?.teamsRegistered ?? 0} total for this event.
                 </p>
                 <button
                   onClick={() => setActiveTab("registrations")}
@@ -656,7 +1016,7 @@ export default function AdminDashboardPage() {
                   <span>Leaderboard Visibility</span>
                 </div>
                 <p className="text-xs text-slate-600">
-                  Leaderboard is currently{" "}
+                  Leaderboard for {currentEvent?.name} is currently{" "}
                   <span
                     className={`font-bold ${
                       isLeaderboardPublic ? "text-emerald-700" : "text-slate-700"
@@ -669,8 +1029,8 @@ export default function AdminDashboardPage() {
                 <div className="flex space-x-2">
                   <button
                     onClick={handleToggleLeaderboardPublic}
-                    disabled={isTogglingPublish}
-                    className="flex-1 py-2 px-3 text-xs font-semibold rounded-lg text-white bg-[#b80000] hover:bg-[#990000] transition-colors"
+                    disabled={isTogglingPublish || isArchived}
+                    className="flex-1 py-2 px-3 text-xs font-semibold rounded-lg text-white bg-[#b80000] hover:bg-[#990000] disabled:bg-slate-300 transition-colors"
                   >
                     {isLeaderboardPublic ? "Make Restricted" : "Publish to Teams"}
                   </button>
@@ -686,7 +1046,7 @@ export default function AdminDashboardPage() {
           </div>
         )}
 
-        {/* TAB 2: REGISTRATION MANAGEMENT */}
+        {/* TAB 2: REGISTRATIONS */}
         {activeTab === "registrations" && (
           <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
             {/* Filter and Search Bar */}
@@ -726,7 +1086,6 @@ export default function AdminDashboardPage() {
               </div>
             </div>
 
-            {/* Registrations Table */}
             {registrations.length === 0 ? (
               <div className="p-12 text-center">
                 <div className="w-12 h-12 mx-auto rounded-full bg-slate-100 flex items-center justify-center text-slate-400 mb-3">
@@ -735,8 +1094,8 @@ export default function AdminDashboardPage() {
                 <h3 className="text-sm font-bold text-slate-900">No registrations found</h3>
                 <p className="mt-1 text-xs text-slate-500 max-w-sm mx-auto">
                   {regSearch || regStatusFilter !== "ALL"
-                    ? "No teams match your filter criteria. Try clearing the search or status filter."
-                    : "No teams have registered yet. Once teams register, they will appear here for your review."}
+                    ? "No teams match your filter criteria. Try clearing search or status filter."
+                    : `No teams have registered for "${currentEvent?.name}" yet.`}
                 </p>
               </div>
             ) : (
@@ -800,7 +1159,8 @@ export default function AdminDashboardPage() {
                               setReviewNote(reg.adminFeedback || "");
                               setReviewModalOpen(true);
                             }}
-                            className="inline-flex items-center space-x-1 px-2.5 py-1 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded hover:bg-slate-50 hover:text-[#b80000] transition-colors"
+                            disabled={isArchived}
+                            className="inline-flex items-center space-x-1 px-2.5 py-1 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded hover:bg-slate-50 hover:text-[#b80000] disabled:opacity-50 transition-colors"
                           >
                             <span>Review</span>
                           </button>
@@ -823,7 +1183,7 @@ export default function AdminDashboardPage() {
                   Approved Participating Teams ({approvedTeams.length})
                 </h2>
                 <p className="text-xs text-slate-500">
-                  These teams are eligible to rate and be rated in the event.
+                  Eligible teams for {currentEvent?.name}.
                 </p>
               </div>
               <button
@@ -839,7 +1199,7 @@ export default function AdminDashboardPage() {
                 <CheckCircle className="w-10 h-10 mx-auto text-slate-300 mb-2" />
                 <h3 className="text-sm font-bold text-slate-900">No approved teams yet</h3>
                 <p className="mt-1 text-xs text-slate-500 max-w-sm mx-auto">
-                  When you approve team registrations from the Registrations tab, they will be listed here.
+                  Approve team registrations from the Registrations tab to add them to this event.
                 </p>
               </div>
             ) : (
@@ -894,10 +1254,10 @@ export default function AdminDashboardPage() {
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div>
                 <h2 className="text-base font-bold text-slate-900">
-                  Live Voting & Ballot Monitor
+                  Voting Monitor ({currentEvent?.name})
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Track dynamic rating progress and final ballot submissions across all approved teams.
+                  Track dynamic rating progress and final ballot submissions for this event.
                 </p>
               </div>
               <button
@@ -937,13 +1297,13 @@ export default function AdminDashboardPage() {
               </div>
             </div>
 
-            {/* Voting Status List */}
+            {/* Voting Teams Table */}
             {votingTeams.length === 0 ? (
               <div className="p-12 text-center border border-dashed border-slate-200 rounded-lg">
                 <Vote className="w-10 h-10 mx-auto text-slate-300 mb-2" />
                 <h3 className="text-sm font-bold text-slate-900">No voting activity yet</h3>
                 <p className="mt-1 text-xs text-slate-500 max-w-sm mx-auto">
-                  Once you approve at least 2 teams and advance to &quot;Voting Open&quot;, team ballots will stream live here.
+                  Approve at least 2 teams and advance {currentEvent?.name} to &quot;Voting Open&quot; to begin.
                 </p>
               </div>
             ) : (
@@ -956,7 +1316,8 @@ export default function AdminDashboardPage() {
                       <th className="py-2.5 px-3">Progress</th>
                       <th className="py-2.5 px-3">10s Used</th>
                       <th className="py-2.5 px-3">Ballot Status</th>
-                      <th className="py-2.5 px-3 text-right">Submitted At</th>
+                      <th className="py-2.5 px-3">Submitted At</th>
+                      <th className="py-2.5 px-3 text-right">Admin Unlock</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700">
@@ -988,7 +1349,7 @@ export default function AdminDashboardPage() {
                           </div>
                         </td>
                         <td className="py-2.5 px-3 font-medium text-slate-800">
-                          {vt.tensUsed} / 5
+                          {vt.tensUsed} / {currentEvent?.max_tens || 5}
                         </td>
                         <td className="py-2.5 px-3">
                           <span
@@ -1003,13 +1364,29 @@ export default function AdminDashboardPage() {
                             {vt.status.replace(/_/g, " ")}
                           </span>
                         </td>
-                        <td className="py-2.5 px-3 text-right text-slate-500 font-mono text-[11px]">
+                        <td className="py-2.5 px-3 text-slate-500 font-mono text-[11px]">
                           {vt.submittedAt
                             ? new Date(vt.submittedAt).toLocaleTimeString([], {
                                 hour: "2-digit",
                                 minute: "2-digit",
                               })
                             : "—"}
+                        </td>
+                        <td className="py-2.5 px-3 text-right">
+                          {vt.status === "SUBMITTED" && !isArchived ? (
+                            <button
+                              onClick={() => {
+                                setUnlockTargetTeam(vt);
+                                setUnlockReason("");
+                                setUnlockModalOpen(true);
+                              }}
+                              className="px-2 py-0.5 text-[11px] font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded transition-colors"
+                            >
+                              Unlock Ballot
+                            </button>
+                          ) : (
+                            <span className="text-slate-400 text-[11px]">—</span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1026,25 +1403,27 @@ export default function AdminDashboardPage() {
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div>
                 <h2 className="text-base font-bold text-slate-900">
-                  Event Leaderboard & Standings
+                  {currentEvent?.name} Leaderboard
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Computed by official ranking rules: 1. Highest Average, 2. Most 10s, 3. Most 9s.
+                  Computed from this event&apos;s real finalized ratings only. Ranking rules: 1. Avg score, 2. Tens, 3. Nines.
                 </p>
               </div>
 
               <div className="flex items-center space-x-2">
-                <button
-                  onClick={handleToggleLeaderboardPublic}
-                  disabled={isTogglingPublish}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg text-white transition-colors ${
-                    isLeaderboardPublic
-                      ? "bg-amber-600 hover:bg-amber-700"
-                      : "bg-[#b80000] hover:bg-[#990000]"
-                  }`}
-                >
-                  {isLeaderboardPublic ? "Unpublish (Hide from Teams)" : "Publish Official Leaderboard"}
-                </button>
+                {!isArchived && (
+                  <button
+                    onClick={handleToggleLeaderboardPublic}
+                    disabled={isTogglingPublish}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg text-white transition-colors ${
+                      isLeaderboardPublic
+                        ? "bg-amber-600 hover:bg-amber-700"
+                        : "bg-[#b80000] hover:bg-[#990000]"
+                    }`}
+                  >
+                    {isLeaderboardPublic ? "Unpublish (Hide from Teams)" : "Publish Official Leaderboard"}
+                  </button>
+                )}
                 <button
                   onClick={loadLeaderboard}
                   className="p-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50"
@@ -1059,7 +1438,7 @@ export default function AdminDashboardPage() {
                 <Trophy className="w-10 h-10 mx-auto text-slate-300 mb-2" />
                 <h3 className="text-sm font-bold text-slate-900">Results are not available yet</h3>
                 <p className="mt-1 text-xs text-slate-500 max-w-sm mx-auto">
-                  When voting starts and teams submit ratings, the calculated rankings will appear here automatically.
+                  When teams submit ratings for {currentEvent?.name}, rankings will appear here automatically.
                 </p>
               </div>
             ) : (
@@ -1142,26 +1521,27 @@ export default function AdminDashboardPage() {
           <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-6 space-y-6">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-base font-bold text-slate-900">Official Announcements</h2>
+                <h2 className="text-base font-bold text-slate-900">
+                  {currentEvent?.name} Announcements
+                </h2>
                 <p className="text-xs text-slate-500">
-                  Broadcast notices directly to all teams and participants.
+                  Notice board strictly for participants of this event.
                 </p>
               </div>
-              <button
-                onClick={() => setAnnouncementModalOpen(true)}
-                className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#b80000] hover:bg-[#990000] rounded-lg shadow-2xs transition-colors"
-              >
-                <span>Create Announcement</span>
-              </button>
+              {!isArchived && (
+                <button
+                  onClick={() => setAnnouncementModalOpen(true)}
+                  className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#b80000] hover:bg-[#990000] rounded-lg shadow-2xs transition-colors"
+                >
+                  <span>Create Announcement</span>
+                </button>
+              )}
             </div>
 
             {announcements.length === 0 ? (
               <div className="p-12 text-center border border-dashed border-slate-200 rounded-lg">
                 <Bell className="w-10 h-10 mx-auto text-slate-300 mb-2" />
-                <h3 className="text-sm font-bold text-slate-900">No announcements yet</h3>
-                <p className="mt-1 text-xs text-slate-500 max-w-sm mx-auto">
-                  Click &quot;Create Announcement&quot; above to post official guidelines or schedule updates.
-                </p>
+                <h3 className="text-sm font-bold text-slate-900">No announcements for this event yet</h3>
               </div>
             ) : (
               <div className="space-y-3">
@@ -1184,22 +1564,22 @@ export default function AdminDashboardPage() {
                         )}
                         <h3 className="text-sm font-bold text-slate-900">{ann.title}</h3>
                       </div>
-                      <div className="flex items-center space-x-1">
-                        <button
-                          onClick={() => handleTogglePinAnnouncement(ann.id)}
-                          className="p-1 text-slate-400 hover:text-[#b80000] transition-colors"
-                          title={ann.is_pinned ? "Unpin" : "Pin to top"}
-                        >
-                          <Pin className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteAnnouncement(ann.id)}
-                          className="p-1 text-slate-400 hover:text-red-600 transition-colors"
-                          title="Delete"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                      {!isArchived && (
+                        <div className="flex items-center space-x-1">
+                          <button
+                            onClick={() => handleTogglePinAnnouncement(ann.id)}
+                            className="p-1 text-slate-400 hover:text-[#b80000] transition-colors"
+                          >
+                            <Pin className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteAnnouncement(ann.id)}
+                            className="p-1 text-slate-400 hover:text-red-600 transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
                     </div>
                     <p className="mt-2 text-xs text-slate-700 whitespace-pre-line">
                       {ann.content}
@@ -1214,16 +1594,16 @@ export default function AdminDashboardPage() {
           </div>
         )}
 
-        {/* TAB 7: DISCUSSION MODERATION */}
+        {/* TAB 7: DISCUSSION */}
         {activeTab === "discussion" && (
           <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-6 space-y-6">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-base font-bold text-slate-900">
-                  General Discussion Moderation
+                  {currentEvent?.name} Discussion Moderation
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Review and moderate community messages from approved teams.
+                  Review and moderate community messages from approved teams in this event.
                 </p>
               </div>
               <button
@@ -1237,10 +1617,7 @@ export default function AdminDashboardPage() {
             {discussions.length === 0 ? (
               <div className="p-12 text-center border border-dashed border-slate-200 rounded-lg">
                 <MessageSquare className="w-10 h-10 mx-auto text-slate-300 mb-2" />
-                <h3 className="text-sm font-bold text-slate-900">No discussion messages yet</h3>
-                <p className="mt-1 text-xs text-slate-500 max-w-sm mx-auto">
-                  When approved team members post in the community forum, their messages will appear here.
-                </p>
+                <h3 className="text-sm font-bold text-slate-900">No discussion messages in this event yet</h3>
               </div>
             ) : (
               <div className="divide-y divide-slate-100">
@@ -1266,13 +1643,15 @@ export default function AdminDashboardPage() {
                       <p className="text-xs text-slate-700">{msg.content}</p>
                     </div>
 
-                    <button
-                      onClick={() => handleDeleteDiscussion(msg.id)}
-                      className="text-slate-400 hover:text-red-600 p-1 transition-colors"
-                      title="Moderate / Delete message"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {!isArchived && (
+                      <button
+                        onClick={() => handleDeleteDiscussion(msg.id)}
+                        className="text-slate-400 hover:text-red-600 p-1 transition-colors"
+                        title="Moderate / Delete message"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1280,14 +1659,16 @@ export default function AdminDashboardPage() {
           </div>
         )}
 
-        {/* TAB 8: ACTIVITY LOG (AUDITS) */}
+        {/* TAB 8: AUDIT LOG */}
         {activeTab === "audits" && (
           <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-base font-bold text-slate-900">Activity History</h2>
+                <h2 className="text-base font-bold text-slate-900">
+                  {currentEvent?.name} Activity Log
+                </h2>
                 <p className="text-xs text-slate-500">
-                  Audit trail of all administrative actions, lifecycle state changes, and team submissions.
+                  Audit trail of administrative state changes and team activities for this event.
                 </p>
               </div>
               <button
@@ -1301,7 +1682,7 @@ export default function AdminDashboardPage() {
             {audits.length === 0 ? (
               <div className="p-12 text-center border border-dashed border-slate-200 rounded-lg">
                 <History className="w-10 h-10 mx-auto text-slate-300 mb-2" />
-                <h3 className="text-sm font-bold text-slate-900">No activity recorded yet</h3>
+                <h3 className="text-sm font-bold text-slate-900">No activity recorded for this event yet</h3>
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -1358,16 +1739,281 @@ export default function AdminDashboardPage() {
       >
         <div className="p-3 bg-slate-50 rounded-lg text-xs text-slate-600 border border-slate-200">
           <p className="font-semibold text-slate-800">
-            Transitioning: <span className="text-[#b80000]">{currentStatus.replace(/_/g, " ")}</span> &rarr;{" "}
-            <span className="text-emerald-700 font-bold">{nextAction?.nextStatus?.replace(/_/g, " ")}</span>
+            Event: <span className="text-slate-900 font-bold">{currentEvent?.name}</span>
           </p>
           <p className="mt-1">
-            This action will update the active event stage for all teams and participants.
+            Transitioning: <span className="text-[#b80000]">{currentStatus.replace(/_/g, " ")}</span> &rarr;{" "}
+            <span className="text-emerald-700 font-bold">{nextAction?.nextStatus?.replace(/_/g, " ")}</span>
           </p>
         </div>
       </Modal>
 
-      {/* MODAL 2: Review Registration (Approve / Request Changes / Reject) */}
+      {/* MODAL 2: 6-Step Setup Flow for Creating a New Event */}
+      <Modal
+        isOpen={createEventModalOpen}
+        onClose={() => {
+          if (!isCreatingEvent) setCreateEventModalOpen(false);
+        }}
+        title={`Create New Event (Step ${createStep} of 6)`}
+        description="Set up an independent, fresh event with its own isolated teams and voting."
+      >
+        <div className="space-y-4 text-xs">
+          {/* Stepper Indicator */}
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            {["Basics", "Registration", "Voting", "Leaderboard", "Review", "Confirm"].map((st, i) => (
+              <span
+                key={st}
+                className={`text-[11px] font-bold ${
+                  createStep === i + 1
+                    ? "text-[#b80000] underline"
+                    : createStep > i + 1
+                    ? "text-emerald-700"
+                    : "text-slate-400"
+                }`}
+              >
+                {i + 1}. {st}
+              </span>
+            ))}
+          </div>
+
+          {/* Step 1: Basics */}
+          {createStep === 1 && (
+            <div className="space-y-3">
+              <div>
+                <label className="block font-bold text-slate-900 mb-1">Event Name *</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Q4 Innovation Showcase 2026"
+                  value={newEventName}
+                  onChange={(e) => setNewEventName(e.target.value)}
+                  className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-[#b80000]"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-900 mb-1">Event Description</label>
+                <textarea
+                  rows={3}
+                  placeholder="Briefly describe the purpose, criteria, or theme..."
+                  value={newEventDesc}
+                  onChange={(e) => setNewEventDesc(e.target.value)}
+                  className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-[#b80000]"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Step 2: Registration settings */}
+          {createStep === 2 && (
+            <div className="space-y-3">
+              <p className="text-slate-600">Configure team registration parameters:</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-900 mb-1">Registration Starts</label>
+                  <input
+                    type="date"
+                    value={newRegStart}
+                    onChange={(e) => setNewRegStart(e.target.value)}
+                    className="w-full p-2 border border-slate-300 rounded-lg outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-900 mb-1">Registration Ends</label>
+                  <input
+                    type="date"
+                    value={newRegEnd}
+                    onChange={(e) => setNewRegEnd(e.target.value)}
+                    className="w-full p-2 border border-slate-300 rounded-lg outline-none"
+                  />
+                </div>
+              </div>
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded text-slate-600 text-[11px]">
+                Teams will register with members and receive system-generated Team IDs. All registrations start in Pending review.
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Voting settings */}
+          {createStep === 3 && (
+            <div className="space-y-3">
+              <div>
+                <label className="block font-bold text-slate-900 mb-1">Maximum 10-Point Ratings Allowed</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={newMaxTens}
+                  onChange={(e) => setNewMaxTens(Number(e.target.value))}
+                  className="w-full p-2 border border-slate-300 rounded-lg outline-none"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Default is 5. Teams can award 10 to at most this many other teams. Ratings from 1-9 have no limit.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-900 mb-1">Voting Starts</label>
+                  <input
+                    type="date"
+                    value={newVotingStart}
+                    onChange={(e) => setNewVotingStart(e.target.value)}
+                    className="w-full p-2 border border-slate-300 rounded-lg outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-900 mb-1">Voting Ends</label>
+                  <input
+                    type="date"
+                    value={newVotingEnd}
+                    onChange={(e) => setNewVotingEnd(e.target.value)}
+                    className="w-full p-2 border border-slate-300 rounded-lg outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Step 4: Leaderboard Visibility */}
+          {createStep === 4 && (
+            <div className="space-y-3">
+              <label className="block font-bold text-slate-900 mb-1">Leaderboard Access Mode</label>
+              <div className="space-y-2">
+                <label className="flex items-center space-x-2 p-2.5 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="lb_public"
+                    checked={!newLeaderboardPublic}
+                    onChange={() => setNewLeaderboardPublic(false)}
+                    className="text-[#b80000]"
+                  />
+                  <div>
+                    <div className="font-bold text-slate-800">Restricted (Recommended)</div>
+                    <div className="text-[11px] text-slate-500">Only administrators view live results until published.</div>
+                  </div>
+                </label>
+                <label className="flex items-center space-x-2 p-2.5 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="lb_public"
+                    checked={newLeaderboardPublic}
+                    onChange={() => setNewLeaderboardPublic(true)}
+                    className="text-[#b80000]"
+                  />
+                  <div>
+                    <div className="font-bold text-slate-800">Public Live Standings</div>
+                    <div className="text-[11px] text-slate-500">Teams can see partial/live leaderboard as voting progresses.</div>
+                  </div>
+                </label>
+              </div>
+            </div>
+          )}
+
+          {/* Step 5: Review Configuration */}
+          {createStep === 5 && (
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2 text-xs">
+              <div className="font-bold text-slate-900 pb-1 border-b border-slate-200">
+                Configuration Summary:
+              </div>
+              <div className="flex justify-between">
+                <span>Name:</span>
+                <span className="font-bold text-slate-900">{newEventName || "Untitled"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Initial Status:</span>
+                <span className="font-bold text-amber-700">DRAFT</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Max 10 Ratings:</span>
+                <span className="font-bold">{newMaxTens}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Leaderboard:</span>
+                <span className="font-bold">{newLeaderboardPublic ? "Public" : "Restricted"}</span>
+              </div>
+              <div className="text-[11px] text-slate-500 pt-1">
+                Data Isolation: This event will start with 0 teams, 0 ratings, and clean isolated records.
+              </div>
+            </div>
+          )}
+
+          {/* Step 6: Confirmation */}
+          {createStep === 6 && (
+            <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-900 space-y-2 text-xs">
+              <div className="font-bold text-sm">Ready to Create Event!</div>
+              <p>
+                Clicking &quot;Create Event&quot; will create <strong>{newEventName}</strong> in Draft status. You will be able to review it before opening registration.
+              </p>
+            </div>
+          )}
+
+          {/* Modal Step Navigation Buttons */}
+          <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
+            {createStep > 1 ? (
+              <button
+                type="button"
+                onClick={() => setCreateStep((s) => s - 1)}
+                className="px-3 py-1.5 border border-slate-300 rounded text-slate-700 hover:bg-slate-50"
+              >
+                Back
+              </button>
+            ) : <div />}
+
+            {createStep < 6 ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (createStep === 1 && !newEventName.trim()) {
+                    showFeedback("Please enter an event name.", "error");
+                    return;
+                  }
+                  setCreateStep((s) => s + 1);
+                }}
+                className="px-4 py-1.5 bg-[#b80000] text-white rounded font-bold hover:bg-[#990000]"
+              >
+                Next &rarr;
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleCreateEventSubmit}
+                disabled={isCreatingEvent}
+                className="px-4 py-1.5 bg-emerald-700 text-white rounded font-bold hover:bg-emerald-800 disabled:opacity-50"
+              >
+                {isCreatingEvent ? "Creating..." : "Create Event"}
+              </button>
+            )}
+          </div>
+        </div>
+      </Modal>
+
+      {/* MODAL 3: Duplicate Settings Modal */}
+      <Modal
+        isOpen={duplicateModalOpen}
+        onClose={() => setDuplicateModalOpen(false)}
+        title="Duplicate Event Settings"
+        description="Clone event configuration (rules, max 10s, settings) to a new Draft event without copying any historical teams or votes."
+        confirmLabel="Create Duplicated Event"
+        onConfirm={handleDuplicateSubmit}
+        isLoading={isDuplicating}
+      >
+        <div className="space-y-3 text-xs">
+          <div>
+            <label className="block font-bold text-slate-900 mb-1">New Event Name</label>
+            <input
+              type="text"
+              value={duplicateEventName}
+              onChange={(e) => setDuplicateEventName(e.target.value)}
+              className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-[#b80000]"
+            />
+          </div>
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded text-amber-800 text-[11px]">
+            <span className="font-bold">Historical Data Protected:</span> Teams, registrations, ratings, votes, and messages from {duplicateSourceEvent?.name} will NOT be copied. The new event starts cleanly in Draft.
+          </div>
+        </div>
+      </Modal>
+
+      {/* MODAL 4: Review Registration */}
       <Modal
         isOpen={reviewModalOpen}
         onClose={() => setReviewModalOpen(false)}
@@ -1385,63 +2031,39 @@ export default function AdminDashboardPage() {
       >
         {selectedReg && (
           <div className="space-y-4 text-xs text-slate-700">
-            {/* Team summary card */}
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1">
+              <div>
+                <span className="font-bold text-slate-900">Event:</span> {currentEvent?.name}
+              </div>
               <div>
                 <span className="font-bold text-slate-900">Team Name:</span> {selectedReg.name}
               </div>
               <div>
                 <span className="font-bold text-slate-900">Leader:</span> {selectedReg.leaderName} ({selectedReg.leaderEmail})
               </div>
-              {selectedReg.contact && (
-                <div>
-                  <span className="font-bold text-slate-900">Contact:</span> {selectedReg.contact}
-                </div>
-              )}
-              {selectedReg.description && (
-                <div className="pt-1 text-slate-600 italic">
-                  &quot;{selectedReg.description}&quot;
-                </div>
-              )}
             </div>
 
-            {/* Roster list */}
             <div>
-              <div className="font-bold text-slate-900 mb-1">
-                Submitted Members ({selectedReg.members?.length || 1}):
-              </div>
-              <ul className="divide-y divide-slate-100 bg-slate-50 rounded border border-slate-200 max-h-36 overflow-y-auto">
-                {selectedReg.members?.map((m: any, i: number) => (
-                  <li key={i} className="px-3 py-1.5 flex justify-between">
-                    <span className="font-medium text-slate-800">{m.name}</span>
-                    <span className="text-slate-500">{m.role || "Member"}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            {/* Review Decision Buttons */}
-            <div>
-              <div className="font-bold text-slate-900 mb-1.5">Administrative Decision:</div>
+              <div className="font-bold text-slate-900 mb-1.5">Decision:</div>
               <div className="grid grid-cols-3 gap-2">
                 <button
                   type="button"
                   onClick={() => setReviewAction("APPROVE")}
-                  className={`py-2 px-2 text-xs font-bold rounded-lg border text-center transition-all ${
+                  className={`py-2 text-xs font-bold rounded-lg border text-center ${
                     reviewAction === "APPROVE"
                       ? "bg-emerald-50 text-emerald-800 border-emerald-300 ring-1 ring-emerald-400"
-                      : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                      : "bg-white text-slate-700 border-slate-200"
                   }`}
                 >
-                  Approve Team
+                  Approve
                 </button>
                 <button
                   type="button"
                   onClick={() => setReviewAction("REQUEST_CHANGES")}
-                  className={`py-2 px-2 text-xs font-bold rounded-lg border text-center transition-all ${
+                  className={`py-2 text-xs font-bold rounded-lg border text-center ${
                     reviewAction === "REQUEST_CHANGES"
                       ? "bg-blue-50 text-blue-800 border-blue-300 ring-1 ring-blue-400"
-                      : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                      : "bg-white text-slate-700 border-slate-200"
                   }`}
                 >
                   Request Changes
@@ -1449,45 +2071,66 @@ export default function AdminDashboardPage() {
                 <button
                   type="button"
                   onClick={() => setReviewAction("REJECT")}
-                  className={`py-2 px-2 text-xs font-bold rounded-lg border text-center transition-all ${
+                  className={`py-2 text-xs font-bold rounded-lg border text-center ${
                     reviewAction === "REJECT"
                       ? "bg-red-50 text-red-800 border-red-300 ring-1 ring-red-400"
-                      : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                      : "bg-white text-slate-700 border-slate-200"
                   }`}
                 >
-                  Reject Team
+                  Reject
                 </button>
               </div>
             </div>
 
-            {/* Feedback / Note field */}
             <div>
               <label className="block font-bold text-slate-900 mb-1">
-                {reviewAction === "REQUEST_CHANGES"
-                  ? "Changes Requested Note (Required):"
-                  : "Organizer Feedback / Note (Optional):"}
+                {reviewAction === "REQUEST_CHANGES" ? "Requested Changes (Required):" : "Feedback Note (Optional):"}
               </label>
               <textarea
                 rows={2}
-                placeholder={
-                  reviewAction === "REQUEST_CHANGES"
-                    ? "Explain what information the team needs to update..."
-                    : "Optional note for records..."
-                }
                 value={reviewNote}
                 onChange={(e) => setReviewNote(e.target.value)}
-                className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-[#b80000] bg-white text-xs"
+                className="w-full p-2.5 border border-slate-300 rounded-lg outline-none text-xs"
               />
             </div>
           </div>
         )}
       </Modal>
 
-      {/* MODAL 3: Create Announcement */}
+      {/* MODAL 5: Unlock Ballot */}
+      <Modal
+        isOpen={unlockModalOpen}
+        onClose={() => setUnlockModalOpen(false)}
+        title={`Unlock Ballot: ${unlockTargetTeam?.teamName || unlockTargetTeam?.name || ""}`}
+        description="Allow a team to update and re-submit their ratings. A formal reason is required."
+        confirmLabel="Unlock Ballot"
+        confirmVariant="danger"
+        onConfirm={handleUnlockSubmit}
+        isLoading={isUnlocking}
+      >
+        <div className="space-y-3 text-xs">
+          <div>
+            <label className="block font-bold text-slate-900 mb-1">Reason for Unlocking *</label>
+            <textarea
+              rows={3}
+              placeholder="e.g. Team reported an accidental submit before completing demo review..."
+              value={unlockReason}
+              onChange={(e) => setUnlockReason(e.target.value)}
+              className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-[#b80000]"
+              required
+            />
+          </div>
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded text-amber-800 text-[11px]">
+            <span className="font-bold">Audit Notice:</span> This action will be logged in the permanent activity history with your administrator email, timestamp, and reason.
+          </div>
+        </div>
+      </Modal>
+
+      {/* MODAL 6: Create Announcement */}
       <Modal
         isOpen={announcementModalOpen}
         onClose={() => setAnnouncementModalOpen(false)}
-        title="Create Official Announcement"
+        title={`Create Announcement (${currentEvent?.name})`}
         confirmLabel="Publish Announcement"
         onConfirm={handleCreateAnnouncement as any}
         isLoading={isSavingAnnouncement}
@@ -1523,7 +2166,7 @@ export default function AdminDashboardPage() {
               id="pin_ann"
               checked={newIsPinned}
               onChange={(e) => setNewIsPinned(e.target.checked)}
-              className="rounded text-[#b80000] focus:ring-[#b80000]"
+              className="rounded text-[#b80000]"
             />
             <label htmlFor="pin_ann" className="text-xs font-semibold text-slate-800">
               Pin to top of announcements list

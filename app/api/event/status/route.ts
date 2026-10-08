@@ -1,12 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getSession } from "@/lib/auth";
 import { Database } from "@/lib/db";
 import { WORKFLOW_TRANSITIONS, STATUS_DESCRIPTIONS } from "@/lib/rules";
 
 export async function GET(req: NextRequest) {
   try {
     await Database.ensureSynced();
-    const event = Database.getEvent();
-    const allTeams = Database.getAllTeams();
+    const session = getSession(req);
+    const { searchParams } = new URL(req.url);
+
+    // Event priority: explicit query param > team's enrolled event > active default event
+    const requestedEventId =
+      searchParams.get("eventId") ||
+      (session?.role === "team" ? session.eventId : null) ||
+      Database.getActiveEventId();
+
+    const event = Database.getEvent(requestedEventId);
+    if (!event) {
+      return NextResponse.json({ error: "Event not found" }, { status: 404 });
+    }
+
+    const allTeams = Database.getAllTeams(event.id);
     const approvedTeams = allTeams.filter((t) => t.status === "APPROVED");
     const pendingTeams = allTeams.filter((t) => t.status === "PENDING");
     const changesRequested = allTeams.filter((t) => t.status === "CHANGES_REQUESTED");

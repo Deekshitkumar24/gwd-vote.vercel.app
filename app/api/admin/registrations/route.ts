@@ -11,10 +11,11 @@ export async function GET(req: NextRequest) {
     }
 
     const { searchParams } = new URL(req.url);
+    const eventId = searchParams.get("eventId") || Database.getActiveEventId();
     const search = (searchParams.get("search") || "").trim().toLowerCase();
     const statusFilter = (searchParams.get("status") || "ALL").toUpperCase();
 
-    let teams = Database.getAllTeams();
+    let teams = Database.getAllTeams(eventId);
 
     if (statusFilter !== "ALL") {
       teams = teams.filter((t) => t.status === statusFilter);
@@ -39,6 +40,7 @@ export async function GET(req: NextRequest) {
 
     const result = teams.map((t) => ({
       id: t.id,
+      eventId: t.event_id,
       code: t.code,
       name: t.name,
       leaderName: t.leader_name,
@@ -54,7 +56,7 @@ export async function GET(req: NextRequest) {
       submittedAt: t.submitted_at,
     }));
 
-    return NextResponse.json({ registrations: result });
+    return NextResponse.json({ registrations: result, eventId });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || "Failed to load registrations" }, { status: 500 });
   }

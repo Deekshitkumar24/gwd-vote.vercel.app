@@ -15,13 +15,15 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Team not found" }, { status: 404 });
     }
 
-    const ratings = Database.getRatingsByRater(currentTeam.id);
+    const eventId = currentTeam.event_id;
+    const ratings = Database.getRatingsByRater(eventId, currentTeam.id);
     const ratingsMap: Record<string, number> = {};
     for (const r of ratings) {
       ratingsMap[r.target_team_id] = r.score;
     }
 
     return NextResponse.json({
+      eventId,
       ratings: ratingsMap,
       submittedAt: currentTeam.submitted_at,
       isSubmitted: currentTeam.submitted_at !== null,

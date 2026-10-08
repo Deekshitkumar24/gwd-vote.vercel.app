@@ -11,11 +11,17 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { isPublic } = body;
+    const { eventId, isPublic } = body;
+    const targetEvId = eventId || Database.getActiveEventId();
 
-    const updated = await Database.setLeaderboardPublic(Boolean(isPublic));
+    const updated = await Database.setLeaderboardPublic(targetEvId, Boolean(isPublic));
+    if (!updated) {
+      return NextResponse.json({ error: "Event not found" }, { status: 404 });
+    }
+
     return NextResponse.json({
       success: true,
+      eventId: updated.id,
       leaderboardPublic: updated.leaderboard_public,
     });
   } catch (err: any) {

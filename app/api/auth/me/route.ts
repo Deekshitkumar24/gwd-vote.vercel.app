@@ -15,6 +15,7 @@ export async function GET(req: NextRequest) {
       user: {
         role: "admin",
         email: session.email,
+        activeEventId: Database.getActiveEventId(),
       },
     });
   }
@@ -24,11 +25,16 @@ export async function GET(req: NextRequest) {
     if (!team) {
       return NextResponse.json({ authenticated: false, user: null });
     }
+    const event = Database.getEvent(team.event_id);
+
     return NextResponse.json({
       authenticated: true,
       user: {
         role: "team",
         teamId: team.id,
+        eventId: team.event_id,
+        eventName: event?.name || "GWD Showcase",
+        eventStatus: event?.status || "DRAFT",
         teamCode: team.code,
         teamName: team.name,
         leaderName: team.leader_name,

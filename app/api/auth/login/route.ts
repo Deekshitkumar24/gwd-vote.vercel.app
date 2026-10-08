@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
   try {
     const ip = req.headers.get("x-forwarded-for") || "local";
     const body = await req.json();
-    const { role, code, email, password } = body;
+    const { role, code, email, password, eventId } = body;
 
     const rateKey = `${ip}:${code || email || "anon"}`;
     if (!checkRateLimit(rateKey, 10, 60000)) {
@@ -62,10 +62,29 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Allow lookup by generated code (GWD-101) or leader email
-    let team = Database.getTeamByCode(cleanIdentifier);
+    // Find team: if eventId provided, search that event, else search across events
+    const allTeams = Database.getAllTeams(eventId);
+    let team = allTeams.find(
+      (t) =>
+        t.code.toUpperCase() === cleanIdentifier.toUpperCase() ||
+        t.leader_email.toLowerCase() === cleanIdentifier.toLowerCase()
+    );
+
+    // If not found in target event or no eventId provided, search all events
     if (!team) {
-      team = Database.getTeamByEmail(cleanIdentifier);
+      const allEvents = Database.getAllEvents();
+      for (const ev of allEvents) {
+        const evTeams = Database.getAllTeams(ev.id);
+        const match = evTeams.find(
+          (t) =>
+            t.code.toUpperCase() === cleanIdentifier.toUpperCase() ||
+            t.leader_email.toLowerCase() === cleanIdentifier.toLowerCase()
+        );
+        if (match) {
+          team = match;
+          break;
+        }
+      }
     }
 
     if (!team) {
@@ -84,11 +103,17 @@ export async function POST(req: NextRequest) {
     }
 
     resetRateLimit(rateKey);
-    await Database.recordAudit(team.code, "TEAM_LOGIN", { teamName: team.name });
+    await Database.recordAudit(
+      team.code,
+      "TEAM_LOGIN",
+      { teamName: team.name, eventId: team.event_id },
+      team.event_id
+    );
 
     const payload: SessionPayload = {
       role: "team",
       teamId: team.id,
+      eventId: team.event_id,
       teamCode: team.code,
       teamName: team.name,
       createdAt: Date.now(),
@@ -99,6 +124,7 @@ export async function POST(req: NextRequest) {
       user: {
         role: "team",
         teamId: team.id,
+        eventId: team.event_id,
         teamCode: team.code,
         teamName: team.name,
         status: team.status,

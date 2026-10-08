@@ -4,7 +4,7 @@ import React from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { LogOut, User, ShieldCheck } from "lucide-react";
+import { LogOut, User, ShieldCheck, ChevronDown, Calendar } from "lucide-react";
 
 interface NavbarProps {
   eventName?: string;
@@ -12,6 +12,11 @@ interface NavbarProps {
   userRole?: "admin" | "team" | null;
   userLabel?: string;
   onLogout?: () => void;
+  // Multi-event switcher support
+  eventsList?: Array<{ id: string; name: string; status: string }>;
+  selectedEventId?: string;
+  onSelectEvent?: (eventId: string) => void;
+  onOpenCreateEvent?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -20,6 +25,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   userRole,
   userLabel,
   onLogout,
+  eventsList,
+  selectedEventId,
+  onSelectEvent,
+  onOpenCreateEvent,
 }) => {
   const router = useRouter();
 
@@ -45,6 +54,8 @@ export const Navbar: React.FC<NavbarProps> = ({
         return "bg-blue-50 text-blue-800 border-blue-200";
       case "RESULTS_PUBLISHED":
         return "bg-purple-50 text-purple-800 border-purple-200";
+      case "ARCHIVED":
+        return "bg-slate-100 text-slate-700 border-slate-300";
       case "VOTING_READY":
       case "REGISTRATION_CLOSED":
       case "VOTING_CLOSED":
@@ -64,7 +75,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-xs">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
-          {/* Logo & Event Name */}
+          {/* Logo & Brand */}
           <div className="flex items-center space-x-3 sm:space-x-4">
             <Link href="/" className="flex items-center space-x-3 group">
               <div className="relative w-10 h-10 sm:w-11 sm:h-11 flex-shrink-0 bg-white border border-slate-200 rounded-md p-1 shadow-2xs group-hover:border-[#b80000] transition-colors">
@@ -78,24 +89,40 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
               <div className="flex flex-col">
                 <span className="text-base sm:text-lg font-bold tracking-tight text-slate-900 group-hover:text-[#b80000] transition-colors">
-                  {eventName}
+                  GWD Rating Platform
                 </span>
-                <span className="text-xs text-slate-500 font-medium hidden sm:inline">
-                  Pre-Deployment Team Rating Platform
+                <span className="text-[11px] text-slate-500 font-medium hidden sm:inline">
+                  Multi-Event Team Showcase & Rating System
                 </span>
               </div>
             </Link>
 
-            {eventStatus && (
+            {/* Event Selector for Admin or display badge */}
+            {userRole === "admin" && eventsList && eventsList.length > 0 && onSelectEvent ? (
+              <div className="hidden lg:flex items-center space-x-2 border-l border-slate-200 pl-4 ml-2">
+                <span className="text-xs font-semibold text-slate-400">Event:</span>
+                <select
+                  value={selectedEventId}
+                  onChange={(e) => onSelectEvent(e.target.value)}
+                  className="text-xs bg-slate-50 border border-slate-300 rounded-md px-2.5 py-1 font-bold text-slate-800 outline-none focus:ring-1 focus:ring-[#b80000] max-w-xs truncate"
+                >
+                  {eventsList.map((ev) => (
+                    <option key={ev.id} value={ev.id}>
+                      {ev.name} ({ev.status.replace(/_/g, " ")})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : eventStatus ? (
               <span
                 className={`hidden md:inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${getStatusColor(
                   eventStatus
                 )}`}
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-current mr-1.5 animate-pulse" />
-                {formatStatus(eventStatus)}
+                {eventName} • {formatStatus(eventStatus)}
               </span>
-            )}
+            ) : null}
           </div>
 
           {/* Right actions: User context & Navigation */}

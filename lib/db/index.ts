@@ -14,7 +14,8 @@ export interface TeamMember {
 
 export interface TeamRecord {
   id: string;
-  code: string; // Unique system-generated ID: e.g. GWD-101
+  event_id: string; // Strictly scoped to an event
+  code: string; // Unique system-generated ID within event: e.g. GWD-101
   name: string;
   leader_name: string;
   leader_email: string;
@@ -31,6 +32,7 @@ export interface TeamRecord {
 
 export interface RatingRecord {
   id: string;
+  event_id: string; // Strictly scoped to an event
   rater_team_id: string;
   target_team_id: string;
   score: number;
@@ -39,6 +41,7 @@ export interface RatingRecord {
 
 export interface AnnouncementRecord {
   id: string;
+  event_id: string; // Strictly scoped to an event
   title: string;
   content: string;
   is_pinned: boolean;
@@ -47,6 +50,7 @@ export interface AnnouncementRecord {
 
 export interface DiscussionRecord {
   id: string;
+  event_id: string; // Strictly scoped to an event
   team_id: string;
   team_name: string;
   author_name: string;
@@ -56,6 +60,7 @@ export interface DiscussionRecord {
 
 export interface AuditRecord {
   id: string;
+  event_id?: string;
   timestamp: string;
   actor: string;
   action: string;
@@ -65,37 +70,51 @@ export interface AuditRecord {
 export interface EventRecord {
   id: string;
   name: string;
+  description?: string;
   status: EventStatus;
   leaderboard_public: boolean;
+  max_tens: number;
+  registration_start?: string;
+  registration_end?: string;
+  voting_start?: string;
+  voting_end?: string;
   created_at: string;
   updated_at: string;
+  archived_at?: string | null;
 }
 
 export interface DatabaseState {
-  event: EventRecord;
+  events: EventRecord[];
+  activeEventId: string;
   teams: TeamRecord[];
   ratings: RatingRecord[];
   announcements: AnnouncementRecord[];
   discussions: DiscussionRecord[];
   audits: AuditRecord[];
-  nextTeamSeq: number;
 }
 
+const DEFAULT_EVENT_ID = "gwd-annual-2026";
+
 const DEFAULT_STATE: DatabaseState = {
-  event: {
-    id: "gwd-annual-2026",
-    name: "GWD Team Hackathon & Showcase",
-    status: "DRAFT",
-    leaderboard_public: false,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  },
+  events: [
+    {
+      id: DEFAULT_EVENT_ID,
+      name: "GWD Team Hackathon & Showcase",
+      description: "Annual peer review, rating, and pre-deployment showcase platform.",
+      status: "DRAFT",
+      leaderboard_public: false,
+      max_tens: 5,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      archived_at: null,
+    },
+  ],
+  activeEventId: DEFAULT_EVENT_ID,
   teams: [],
   ratings: [],
   announcements: [],
   discussions: [],
   audits: [],
-  nextTeamSeq: 101,
 };
 
 let memoryState: DatabaseState = JSON.parse(JSON.stringify(DEFAULT_STATE));
@@ -110,18 +129,59 @@ export class Database {
     if (!syncPromise) {
       syncPromise = (async () => {
         try {
-          const remote = await loadStateFromMongo<DatabaseState>();
-          if (remote && remote.event) {
+          const remote = await loadStateFromMongo<any>();
+          if (remote) {
+            // Migration handling: if older single-event format exists in Mongo, convert to multi-event cleanly
+            let eventsList: EventRecord[] = [];
+            let activeId = DEFAULT_EVENT_ID;
+
+            if (Array.isArray(remote.events) && remote.events.length > 0) {
+              eventsList = remote.events;
+              activeId = remote.activeEventId || remote.events[0].id;
+            } else if (remote.event) {
+              eventsList = [{
+                id: remote.event.id || DEFAULT_EVENT_ID,
+                name: remote.event.name || "GWD Team Hackathon & Showcase",
+                description: remote.event.description || "",
+                status: remote.event.status || "DRAFT",
+                leaderboard_public: Boolean(remote.event.leaderboard_public),
+                max_tens: typeof remote.event.max_tens === "number" ? remote.event.max_tens : 5,
+                created_at: remote.event.created_at || new Date().toISOString(),
+                updated_at: remote.event.updated_at || new Date().toISOString(),
+                archived_at: null,
+              }];
+              activeId = eventsList[0].id;
+            } else {
+              eventsList = DEFAULT_STATE.events;
+            }
+
+            // Ensure event_id is set on all child items
+            const defaultEvId = eventsList[0]?.id || DEFAULT_EVENT_ID;
+
+            const teams = Array.isArray(remote.teams)
+              ? remote.teams.map((t: any) => ({ ...t, event_id: t.event_id || defaultEvId }))
+              : [];
+            const ratings = Array.isArray(remote.ratings)
+              ? remote.ratings.map((r: any) => ({ ...r, event_id: r.event_id || defaultEvId }))
+              : [];
+            const announcements = Array.isArray(remote.announcements)
+              ? remote.announcements.map((a: any) => ({ ...a, event_id: a.event_id || defaultEvId }))
+              : [];
+            const discussions = Array.isArray(remote.discussions)
+              ? remote.discussions.map((d: any) => ({ ...d, event_id: d.event_id || defaultEvId }))
+              : [];
+            const audits = Array.isArray(remote.audits)
+              ? remote.audits.map((au: any) => ({ ...au, event_id: au.event_id || defaultEvId }))
+              : [];
+
             memoryState = {
-              ...DEFAULT_STATE,
-              ...remote,
-              event: { ...DEFAULT_STATE.event, ...remote.event },
-              teams: Array.isArray(remote.teams) ? remote.teams : [],
-              ratings: Array.isArray(remote.ratings) ? remote.ratings : [],
-              announcements: Array.isArray(remote.announcements) ? remote.announcements : [],
-              discussions: Array.isArray(remote.discussions) ? remote.discussions : [],
-              audits: Array.isArray(remote.audits) ? remote.audits : [],
-              nextTeamSeq: typeof remote.nextTeamSeq === "number" ? remote.nextTeamSeq : 101,
+              events: eventsList,
+              activeEventId: activeId,
+              teams,
+              ratings,
+              announcements,
+              discussions,
+              audits,
             };
           } else {
             // First time initialization in MongoDB Atlas
@@ -142,84 +202,213 @@ export class Database {
     }
   }
 
-  public static async unlockTeamBallot(teamId: string, adminEmail: string, reason: string): Promise<TeamRecord | null> {
-    const team = memoryState.teams.find((t) => t.id === teamId);
-    if (!team) return null;
-    const prev = team.submitted_at;
-    team.submitted_at = null;
-    await this.recordAudit("admin", "BALLOT_UNLOCKED", {
-      administrator: adminEmail,
-      teamId: team.id,
-      teamCode: team.code,
-      teamName: team.name,
-      reason: reason.trim(),
-      previousState: `SUBMITTED (${prev})`,
-      newState: "UNLOCKED",
+  // ==========================================
+  // EVENT LIFECYCLE & MULTI-EVENT MANAGEMENT
+  // ==========================================
+
+  public static getAllEvents(): EventRecord[] {
+    return [...memoryState.events].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+  }
+
+  public static getActiveEventId(): string {
+    return memoryState.activeEventId || memoryState.events[0]?.id || DEFAULT_EVENT_ID;
+  }
+
+  public static async setActiveEventId(id: string): Promise<EventRecord | null> {
+    const found = memoryState.events.find((e) => e.id === id);
+    if (!found) return null;
+    memoryState.activeEventId = id;
+    await this.persist();
+    return found;
+  }
+
+  public static getEvent(id?: string): EventRecord | null {
+    const targetId = id || this.getActiveEventId();
+    return memoryState.events.find((e) => e.id === targetId) || memoryState.events[0] || null;
+  }
+
+  public static async createEvent(data: {
+    name: string;
+    description?: string;
+    max_tens?: number;
+    leaderboard_public?: boolean;
+    registration_start?: string;
+    registration_end?: string;
+    voting_start?: string;
+    voting_end?: string;
+  }): Promise<EventRecord> {
+    const slug = data.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "");
+    let id = `${slug || "gwd-event"}-${Date.now().toString().slice(-4)}`;
+
+    // Ensure unique ID
+    let counter = 1;
+    while (memoryState.events.some((e) => e.id === id)) {
+      id = `${slug}-${counter}`;
+      counter++;
+    }
+
+    const newEvent: EventRecord = {
+      id,
+      name: data.name.trim(),
+      description: data.description?.trim() || "",
+      status: "DRAFT",
+      leaderboard_public: Boolean(data.leaderboard_public),
+      max_tens: typeof data.max_tens === "number" && data.max_tens > 0 ? data.max_tens : 5,
+      registration_start: data.registration_start || undefined,
+      registration_end: data.registration_end || undefined,
+      voting_start: data.voting_start || undefined,
+      voting_end: data.voting_end || undefined,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      archived_at: null,
+    };
+
+    memoryState.events.unshift(newEvent);
+    memoryState.activeEventId = newEvent.id;
+
+    await this.recordAudit("admin", "EVENT_CREATED", {
+      eventId: newEvent.id,
+      name: newEvent.name,
+    }, newEvent.id);
+
+    await this.persist();
+    return newEvent;
+  }
+
+  /**
+   * Duplicates configuration ONLY from an existing event.
+   * NEVER copies teams, ratings, ballots, discussions, announcements, or audits!
+   */
+  public static async duplicateEventSettings(sourceEventId: string, customName?: string): Promise<EventRecord | null> {
+    const source = this.getEvent(sourceEventId);
+    if (!source) return null;
+
+    const baseName = customName?.trim() || `${source.name} (Copy)`;
+    const newEvent = await this.createEvent({
+      name: baseName,
+      description: source.description,
+      max_tens: source.max_tens,
+      leaderboard_public: source.leaderboard_public,
     });
+
+    await this.recordAudit("admin", "EVENT_SETTINGS_DUPLICATED", {
+      sourceEventId,
+      newEventId: newEvent.id,
+      name: newEvent.name,
+    }, newEvent.id);
+
+    return newEvent;
+  }
+
+  public static async updateEventStatus(eventId: string, nextStatus: EventStatus): Promise<EventRecord | null> {
+    const event = memoryState.events.find((e) => e.id === eventId);
+    if (!event) return null;
+
+    // Prevent modification of archived events
+    if (event.status === "ARCHIVED" && nextStatus !== "ARCHIVED") {
+      throw new Error("This event is archived and cannot be modified.");
+    }
+
+    event.status = nextStatus;
+    event.updated_at = new Date().toISOString();
+    if (nextStatus === "ARCHIVED") {
+      event.archived_at = new Date().toISOString();
+    }
+
+    await this.recordAudit("admin", "EVENT_STATUS_CHANGE", {
+      eventId,
+      nextStatus,
+    }, eventId);
+
     await this.persist();
-    return team;
+    return event;
   }
 
-  // EVENT
-  public static getEvent(): EventRecord {
-    return memoryState.event;
-  }
+  public static async setLeaderboardPublic(eventId: string, isPublic: boolean): Promise<EventRecord | null> {
+    const event = memoryState.events.find((e) => e.id === eventId);
+    if (!event) return null;
 
-  public static async updateEventStatus(nextStatus: EventStatus): Promise<EventRecord> {
-    memoryState.event.status = nextStatus;
-    memoryState.event.updated_at = new Date().toISOString();
-    await this.recordAudit("admin", "EVENT_STATUS_CHANGE", { nextStatus });
+    event.leaderboard_public = isPublic;
+    event.updated_at = new Date().toISOString();
+
+    await this.recordAudit("admin", "LEADERBOARD_VISIBILITY_CHANGE", {
+      eventId,
+      isPublic,
+    }, eventId);
+
     await this.persist();
-    return memoryState.event;
+    return event;
   }
 
-  public static async setLeaderboardPublic(isPublic: boolean): Promise<EventRecord> {
-    memoryState.event.leaderboard_public = isPublic;
-    memoryState.event.updated_at = new Date().toISOString();
-    await this.recordAudit("admin", "LEADERBOARD_VISIBILITY_CHANGE", { isPublic });
-    await this.persist();
-    return memoryState.event;
+  // ==========================================
+  // TEAMS (STRICTLY SCOPED BY EVENT ID)
+  // ==========================================
+
+  public static getAllTeams(eventId?: string): TeamRecord[] {
+    const targetEvId = eventId || this.getActiveEventId();
+    return memoryState.teams.filter((t) => t.event_id === targetEvId);
   }
 
-  // TEAMS
-  public static getAllTeams(): TeamRecord[] {
-    return [...memoryState.teams];
-  }
-
-  public static getApprovedTeams(): TeamRecord[] {
-    return memoryState.teams.filter((t) => t.status === "APPROVED");
+  public static getApprovedTeams(eventId?: string): TeamRecord[] {
+    const targetEvId = eventId || this.getActiveEventId();
+    return memoryState.teams.filter((t) => t.event_id === targetEvId && t.status === "APPROVED");
   }
 
   public static getTeamById(id: string): TeamRecord | null {
     return memoryState.teams.find((t) => t.id === id) || null;
   }
 
-  public static getTeamByCode(code: string): TeamRecord | null {
+  public static getTeamByCode(eventId: string, code: string): TeamRecord | null {
     const clean = code.trim().toUpperCase();
-    return memoryState.teams.find((t) => t.code.toUpperCase() === clean) || null;
+    return (
+      memoryState.teams.find(
+        (t) => t.event_id === eventId && t.code.toUpperCase() === clean
+      ) || null
+    );
   }
 
-  public static getTeamByEmail(email: string): TeamRecord | null {
+  public static getTeamByEmail(eventId: string, email: string): TeamRecord | null {
     const clean = email.trim().toLowerCase();
-    return memoryState.teams.find((t) => t.leader_email.toLowerCase() === clean) || null;
+    return (
+      memoryState.teams.find(
+        (t) => t.event_id === eventId && t.leader_email.toLowerCase() === clean
+      ) || null
+    );
   }
 
-  public static async registerTeam(data: {
-    name: string;
-    leader_name: string;
-    leader_email: string;
-    contact?: string;
-    description?: string;
-    password: string;
-    members?: Array<{ name: string; role?: string; email?: string }>;
-  }): Promise<{ team: TeamRecord; rawPassword: string }> {
-    // Generate unique system ID: GWD-101, GWD-102...
-    let code = `GWD-${memoryState.nextTeamSeq}`;
-    while (memoryState.teams.some((t) => t.code === code)) {
-      memoryState.nextTeamSeq += 1;
-      code = `GWD-${memoryState.nextTeamSeq}`;
+  public static async registerTeam(
+    eventId: string,
+    data: {
+      name: string;
+      leader_name: string;
+      leader_email: string;
+      contact?: string;
+      description?: string;
+      password: string;
+      members?: Array<{ name: string; role?: string; email?: string }>;
     }
-    memoryState.nextTeamSeq += 1;
+  ): Promise<{ team: TeamRecord; rawPassword: string }> {
+    const event = this.getEvent(eventId);
+    if (!event) {
+      throw new Error("Event not found.");
+    }
+    if (event.status !== "REGISTRATION_OPEN") {
+      throw new Error("Registration is not currently open for this event.");
+    }
+
+    // Generate unique sequential Team ID within this specific event (GWD-101, GWD-102...)
+    const eventTeams = memoryState.teams.filter((t) => t.event_id === eventId);
+    let seq = 101 + eventTeams.length;
+    let code = `GWD-${seq}`;
+    while (eventTeams.some((t) => t.code === code)) {
+      seq += 1;
+      code = `GWD-${seq}`;
+    }
 
     const salt = bcrypt.genSaltSync(10);
     const password_hash = bcrypt.hashSync(data.password, salt);
@@ -248,6 +437,7 @@ export class Database {
 
     const newTeam: TeamRecord = {
       id: crypto.randomUUID(),
+      event_id: eventId,
       code,
       name: data.name.trim(),
       leader_name: data.leader_name.trim(),
@@ -264,9 +454,15 @@ export class Database {
     };
 
     memoryState.teams.push(newTeam);
-    await this.recordAudit(code, "TEAM_REGISTRATION", { teamName: newTeam.name, teamCode: code });
-    await this.persist();
 
+    await this.recordAudit(
+      code,
+      "TEAM_REGISTRATION",
+      { eventId, teamName: newTeam.name, teamCode: code },
+      eventId
+    );
+
+    await this.persist();
     return { team: newTeam, rawPassword: data.password };
   }
 
@@ -290,7 +486,13 @@ export class Database {
       team.admin_feedback = feedback?.trim() || "Registration was not approved.";
     }
 
-    await this.recordAudit("admin", `REVIEW_${action}`, { teamId, teamCode: team.code, teamName: team.name, feedback });
+    await this.recordAudit(
+      "admin",
+      `REVIEW_${action}`,
+      { teamId, teamCode: team.code, teamName: team.name, feedback, eventId: team.event_id },
+      team.event_id
+    );
+
     await this.persist();
     return team;
   }
@@ -322,28 +524,77 @@ export class Database {
       }));
     }
 
-    // If changes were requested, return to pending for review
     if (team.status === "CHANGES_REQUESTED") {
       team.status = "PENDING";
     }
 
-    await this.recordAudit(team.code, "TEAM_DETAILS_UPDATED", { teamName: team.name });
+    await this.recordAudit(
+      team.code,
+      "TEAM_DETAILS_UPDATED",
+      { teamName: team.name, eventId: team.event_id },
+      team.event_id
+    );
+
     await this.persist();
     return team;
   }
 
-  // RATINGS
-  public static getRatingsByRater(raterTeamId: string): RatingRecord[] {
-    return memoryState.ratings.filter((r) => r.rater_team_id === raterTeamId);
+  public static async unlockTeamBallot(
+    teamId: string,
+    adminEmail: string,
+    reason: string
+  ): Promise<TeamRecord | null> {
+    const team = memoryState.teams.find((t) => t.id === teamId);
+    if (!team) return null;
+
+    const prev = team.submitted_at;
+    team.submitted_at = null;
+
+    await this.recordAudit(
+      "admin",
+      "BALLOT_UNLOCKED",
+      {
+        administrator: adminEmail,
+        teamId: team.id,
+        teamCode: team.code,
+        teamName: team.name,
+        reason: reason.trim(),
+        previousState: `SUBMITTED (${prev})`,
+        newState: "UNLOCKED",
+        eventId: team.event_id,
+      },
+      team.event_id
+    );
+
+    await this.persist();
+    return team;
   }
 
-  public static getAllRatings(): RatingRecord[] {
-    return [...memoryState.ratings];
+  // ==========================================
+  // RATINGS (STRICTLY SCOPED BY EVENT ID)
+  // ==========================================
+
+  public static getRatingsByRater(eventId: string, raterTeamId: string): RatingRecord[] {
+    return memoryState.ratings.filter(
+      (r) => r.event_id === eventId && r.rater_team_id === raterTeamId
+    );
   }
 
-  public static async saveDraftRating(raterTeamId: string, targetTeamId: string, score: number): Promise<RatingRecord> {
+  public static getAllRatings(eventId: string): RatingRecord[] {
+    return memoryState.ratings.filter((r) => r.event_id === eventId);
+  }
+
+  public static async saveDraftRating(
+    eventId: string,
+    raterTeamId: string,
+    targetTeamId: string,
+    score: number
+  ): Promise<RatingRecord> {
     const existingIndex = memoryState.ratings.findIndex(
-      (r) => r.rater_team_id === raterTeamId && r.target_team_id === targetTeamId
+      (r) =>
+        r.event_id === eventId &&
+        r.rater_team_id === raterTeamId &&
+        r.target_team_id === targetTeamId
     );
 
     if (existingIndex >= 0) {
@@ -354,6 +605,7 @@ export class Database {
     } else {
       const record: RatingRecord = {
         id: crypto.randomUUID(),
+        event_id: eventId,
         rater_team_id: raterTeamId,
         target_team_id: targetTeamId,
         score,
@@ -365,63 +617,86 @@ export class Database {
     }
   }
 
-  public static async submitFinalBallot(raterTeamId: string): Promise<TeamRecord | null> {
-    const team = memoryState.teams.find((t) => t.id === raterTeamId);
+  public static async submitFinalBallot(eventId: string, raterTeamId: string): Promise<TeamRecord | null> {
+    const team = memoryState.teams.find((t) => t.id === raterTeamId && t.event_id === eventId);
     if (!team) return null;
 
     team.submitted_at = new Date().toISOString();
-    await this.recordAudit(team.code, "BALLOT_SUBMITTED", { teamName: team.name });
+
+    await this.recordAudit(
+      team.code,
+      "BALLOT_SUBMITTED",
+      { teamName: team.name, eventId },
+      eventId
+    );
+
     await this.persist();
     return team;
   }
 
-  // ANNOUNCEMENTS
-  public static getAnnouncements(): AnnouncementRecord[] {
-    return [...memoryState.announcements].sort((a, b) => {
-      if (a.is_pinned !== b.is_pinned) return a.is_pinned ? -1 : 1;
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-    });
+  // ==========================================
+  // ANNOUNCEMENTS (STRICTLY SCOPED BY EVENT ID)
+  // ==========================================
+
+  public static getAnnouncements(eventId: string): AnnouncementRecord[] {
+    return memoryState.announcements
+      .filter((a) => a.event_id === eventId)
+      .sort((a, b) => {
+        if (a.is_pinned !== b.is_pinned) return a.is_pinned ? -1 : 1;
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      });
   }
 
-  public static async createAnnouncement(title: string, content: string, is_pinned: boolean = false): Promise<AnnouncementRecord> {
+  public static async createAnnouncement(
+    eventId: string,
+    title: string,
+    content: string,
+    is_pinned: boolean = false
+  ): Promise<AnnouncementRecord> {
     const record: AnnouncementRecord = {
       id: crypto.randomUUID(),
+      event_id: eventId,
       title: title.trim(),
       content: content.trim(),
       is_pinned,
       created_at: new Date().toISOString(),
     };
     memoryState.announcements.unshift(record);
-    await this.recordAudit("admin", "CREATE_ANNOUNCEMENT", { title: record.title });
+
+    await this.recordAudit("admin", "CREATE_ANNOUNCEMENT", { title: record.title, eventId }, eventId);
     await this.persist();
     return record;
   }
 
-  public static async togglePinAnnouncement(id: string): Promise<AnnouncementRecord | null> {
-    const item = memoryState.announcements.find((a) => a.id === id);
+  public static async togglePinAnnouncement(eventId: string, id: string): Promise<AnnouncementRecord | null> {
+    const item = memoryState.announcements.find((a) => a.id === id && a.event_id === eventId);
     if (!item) return null;
     item.is_pinned = !item.is_pinned;
     await this.persist();
     return item;
   }
 
-  public static async deleteAnnouncement(id: string): Promise<boolean> {
-    const idx = memoryState.announcements.findIndex((a) => a.id === id);
+  public static async deleteAnnouncement(eventId: string, id: string): Promise<boolean> {
+    const idx = memoryState.announcements.findIndex((a) => a.id === id && a.event_id === eventId);
     if (idx < 0) return false;
     const removed = memoryState.announcements.splice(idx, 1)[0];
-    await this.recordAudit("admin", "DELETE_ANNOUNCEMENT", { title: removed.title });
+    await this.recordAudit("admin", "DELETE_ANNOUNCEMENT", { title: removed.title, eventId }, eventId);
     await this.persist();
     return true;
   }
 
-  // DISCUSSIONS
-  public static getDiscussions(): DiscussionRecord[] {
-    return [...memoryState.discussions].sort(
-      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
+  // ==========================================
+  // DISCUSSIONS (STRICTLY SCOPED BY EVENT ID)
+  // ==========================================
+
+  public static getDiscussions(eventId: string): DiscussionRecord[] {
+    return memoryState.discussions
+      .filter((d) => d.event_id === eventId)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }
 
   public static async addDiscussionMessage(
+    eventId: string,
     teamId: string,
     teamName: string,
     authorName: string,
@@ -429,6 +704,7 @@ export class Database {
   ): Promise<DiscussionRecord> {
     const record: DiscussionRecord = {
       id: crypto.randomUUID(),
+      event_id: eventId,
       team_id: teamId,
       team_name: teamName,
       author_name: authorName.trim(),
@@ -440,34 +716,43 @@ export class Database {
     return record;
   }
 
-  public static async deleteDiscussionMessage(id: string): Promise<boolean> {
-    const idx = memoryState.discussions.findIndex((d) => d.id === id);
+  public static async deleteDiscussionMessage(eventId: string, id: string): Promise<boolean> {
+    const idx = memoryState.discussions.findIndex((d) => d.id === id && d.event_id === eventId);
     if (idx < 0) return false;
     memoryState.discussions.splice(idx, 1);
-    await this.recordAudit("admin", "MODERATE_DISCUSSION", { messageId: id });
+    await this.recordAudit("admin", "MODERATE_DISCUSSION", { messageId: id, eventId }, eventId);
     await this.persist();
     return true;
   }
 
-  // AUDIT LOG
-  public static getAudits(): AuditRecord[] {
-    return [...memoryState.audits].sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    );
+  // ==========================================
+  // AUDIT LOG (EVENT-SCOPED OR GLOBAL)
+  // ==========================================
+
+  public static getAudits(eventId?: string): AuditRecord[] {
+    const list = eventId
+      ? memoryState.audits.filter((a) => a.event_id === eventId)
+      : memoryState.audits;
+    return [...list].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }
 
-  public static async recordAudit(actor: string, action: string, details?: Record<string, any>): Promise<void> {
+  public static async recordAudit(
+    actor: string,
+    action: string,
+    details?: Record<string, any>,
+    eventId?: string
+  ): Promise<void> {
     const audit: AuditRecord = {
       id: crypto.randomUUID(),
+      event_id: eventId,
       timestamp: new Date().toISOString(),
       actor,
       action,
       details,
     };
     memoryState.audits.unshift(audit);
-    // Keep last 500 audit logs
-    if (memoryState.audits.length > 500) {
-      memoryState.audits = memoryState.audits.slice(0, 500);
+    if (memoryState.audits.length > 800) {
+      memoryState.audits = memoryState.audits.slice(0, 800);
     }
   }
 }
